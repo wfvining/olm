@@ -270,3 +270,37 @@ prop_enum() ->
                 )
         end
     ).
+
+prop_key_type() ->
+    ?FORALL(
+        K,
+        atom(),
+        begin
+            Spec = #{K => fun cmap:integer/1},
+            #{K => 1} =:= cmap:new(Spec, #{K => 1}) andalso
+                #{K => 1} =:= cmap:new(Spec, #{atom_to_list(K) => 1}) andalso
+                #{K => 1} =:= cmap:new(Spec, #{atom_to_binary(K) => 1})
+        end
+    ).
+
+prop_unknown_keys() ->
+    ?FORALL(
+        Key,
+        ?SUCHTHATMAYBE(
+            Key,
+            string(),
+            try
+                list_to_existing_atom(Key),
+                false
+            catch
+                error:badarg -> true
+            end
+        ),
+        begin
+            K = unicode:characters_to_binary(Key),
+            #{K => 1} =:= cmap:new(#{}, #{Key => 1}, [extra_keys]) andalso
+                #{K => 1} =:= cmap:new(#{}, #{unicode:characters_to_binary(Key) => 1}, [extra_keys]) andalso
+                #{K => 1} =:= cmap:new(#{}, #{list_to_atom(Key) => 1}, [extra_keys]) andalso
+                #{K => 1} =:= cmap:new(#{}, #{Key => 1}, [extra_keys])
+        end
+    ).
