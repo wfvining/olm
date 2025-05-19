@@ -11,7 +11,7 @@ with constrained keys and values.
 
 -export_type([spec/0]).
 
--type spec() :: #{atom => fun(), '$extra_keys' => boolean(), '$required' => [atom()]}.
+-type spec() :: #{atom => fun()}.
 -type string_constraints() :: #{max_length => non_neg_integer()}.
 -type integer_constraints() :: #{min => integer(), max => integer()}.
 
