@@ -304,3 +304,43 @@ prop_unknown_keys() ->
                 #{K => 1} =:= cmap:new(#{}, #{Key => 1}, [extra_keys])
         end
     ).
+
+prop_boolean() ->
+    ?FORALL(
+        Val,
+        oneof([proper_types:boolean(), proper_types:term()]),
+        begin
+            if
+                is_boolean(Val) ->
+                    #{foo => Val} =:= cmap:new(#{foo => fun cmap:boolean/1}, #{foo => Val});
+                true ->
+                    try
+                        cmap:new(#{foo => fun cmap:boolean/1}, #{foo => Val}),
+                        false
+                    catch
+                        error:{badvalue, {not_boolean, _}} ->
+                            true
+                    end
+            end
+        end
+    ).
+
+prop_number() ->
+    ?FORALL(
+        Val,
+        oneof([proper_types:number(), proper_types:term()]),
+        begin
+            if
+                is_number(Val) ->
+                    #{foo => Val} =:= cmap:new(#{foo => fun cmap:number/1}, #{foo => Val});
+                true ->
+                    try
+                        cmap:new(#{foo => fun cmap:number/1}, #{foo => Val}),
+                        false
+                    catch
+                        error:{badvalue, {not_number, _}} ->
+                            true
+                    end
+            end
+        end
+    ).

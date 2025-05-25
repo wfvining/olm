@@ -7,7 +7,7 @@ with constrained keys and values.
 """.
 
 -export([new/2, new/3]).
--export([string/1, string_/1, datetime/1, enum_/1, integer/1, integer_/1]).
+-export([string/1, string_/1, datetime/1, enum_/1, integer/1, integer_/1, number/1, boolean/1]).
 
 -export_type([spec/0]).
 
@@ -124,6 +124,18 @@ integer_(Constraints) ->
             not Sat -> error({badvalue, {invalid, I}})
         end
     end.
+
+-spec number(Num :: number()) -> number().
+number(Num) when is_number(Num) ->
+    Num;
+number(NotNumber) ->
+    error({badvalue, {not_number, NotNumber}}).
+
+-spec boolean(Bool :: boolean()) -> boolean().
+boolean(Bool) when is_boolean(Bool) ->
+    Bool;
+boolean(NotBool) ->
+    error({badvalue, {not_boolean, NotBool}}).
 
 -doc #{equiv => new(Spec, Map, [])}.
 -spec new(spec(), #{atom() | binary() | string() => term()}) -> #{atom() | binary() => term()}.
