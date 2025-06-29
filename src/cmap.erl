@@ -7,11 +7,22 @@ with constrained keys and values.
 """.
 
 -export([new/2, new/3]).
--export([string/1, string_/1, datetime/1, enum_/1, integer/1, integer_/1, number/1, boolean/1]).
+-export([
+    string/1,
+    string_/1,
+    datetime/1,
+    enum_/1,
+    integer/1,
+    integer_/1,
+    number/1,
+    boolean/1,
+    list/1,
+    list_/1
+]).
 
 -export_type([spec/0]).
 
--type spec() :: #{atom => fun()}.
+-type spec() :: #{atom => fun((any()) -> any())}.
 -type string_constraints() :: #{max_length => non_neg_integer()}.
 -type integer_constraints() :: #{min => integer(), max => integer()}.
 
@@ -22,13 +33,21 @@ Ensure `Value` is a unicode string. Returns the string as a unicode binary.
 string(Bin) when is_binary(Bin) ->
     Bin;
 string(Str) when is_list(Str) ->
-    Valid = lists:all(fun(X) -> X =< 16#10ffff end, Str),
+    Valid = lists:all(
+        fun
+            (X) when is_integer(X) -> (X =< 16#10ffff) and (X >= 0);
+            (_) -> false
+        end,
+        Str
+    ),
     if
         Valid ->
             unicode:characters_to_binary(Str);
         true ->
             error({badvalue, {not_unicode, Str}})
-    end.
+    end;
+string(Term) ->
+    error({badvalue, {not_string, Term}}).
 
 -doc """
 Return a constructor for a constrained string.
@@ -41,12 +60,14 @@ string_(#{max_length := MaxLen}) ->
         case string:length(Str1) > MaxLen of
             true ->
                 error(
-                    {badvalue, {string_too_long, [{len, string:length(Str1)}, {limit, {MaxLen}}]}}
+                    {badvalue, {string_too_long, [{len, string:length(Str1)}, {limit, MaxLen}]}}
                 );
             false ->
                 Str1
         end
-    end.
+    end;
+string_(_) ->
+    fun cmap:string/1.
 
 datetime(Bin) when is_binary(Bin) ->
     datetime(binary_to_list(Bin));
@@ -66,7 +87,9 @@ datetime(Datetime = {Date, {H, M, S}}) when H < 24, H >= 0, M < 60, M >= 0, S < 
             error({badvalue, {invalid_date, Date}})
     end;
 datetime({{_, _, _}, Time = {_, _, _}}) ->
-    error({badvalue, {invalid_time, Time}}).
+    error({badvalue, {invalid_time, Time}});
+datetime(Value) ->
+    error({badvalue, {invalid_datetime, Value}}).
 
 -spec enum_(Values :: [atom()]) -> fun((atom() | binary()) -> atom()).
 enum_(Values) ->
@@ -97,7 +120,9 @@ enum_(Values) ->
             case lists:member(Val, Values) of
                 true -> Val;
                 false -> error({badvalue, {invalid_enum_value, Val}})
-            end
+            end;
+        (Val) ->
+            error({badvalue, {invalid_enum_value, Val}})
     end.
 
 -spec integer(integer()) -> integer().
@@ -185,7 +210,7 @@ new(Spec, Map) ->
     new(Spec, Map, []).
 
 -spec new(
-    spec(),
+    Spec :: #{atom() => fun((any()) -> any())},
     #{atom() | binary() | string() => term()},
     Options :: [Option]
 ) -> #{atom() | binary() => term()} when
