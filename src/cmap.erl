@@ -137,6 +137,48 @@ boolean(Bool) when is_boolean(Bool) ->
 boolean(NotBool) ->
     error({badvalue, {not_boolean, NotBool}}).
 
+-doc """
+Constuct a list of any length with arbitrary items.
+""".
+-spec list([X]) -> [X].
+list(List) when is_list(List) ->
+    List;
+list(X) ->
+    error({badvalue, {not_list, X}}).
+
+-doc """
+Construct a constrained list.
+""".
+-spec list_(
+    #{
+        min_length => non_neg_integer(),
+        max_length => non_neg_integer(),
+        items => fun((X) -> Item)
+    }
+) -> fun(([X]) -> [Item]).
+list_(Options) ->
+    Item = maps:get(items, Options, fun(X) -> X end),
+    MinLength = maps:get(min_length, Options, 0),
+    MaxLength = maps:get(max_length, Options, infinity),
+    fun
+        (Xs) when is_list(Xs), length(Xs) >= MinLength, length(Xs) =< MaxLength ->
+            [
+                try
+                    Item(X)
+                catch
+                    error:Reason ->
+                        error({badvalue, {baditem, {I, Reason}}})
+                end
+             || {I, X} <- lists:enumerate(Xs)
+            ];
+        (Xs) when is_list(Xs), length(Xs) < MinLength ->
+            error({badvalue, {too_short, Xs}});
+        (Xs) when is_list(Xs), length(Xs) > MaxLength ->
+            error({badvalue, {too_long, Xs}});
+        (X) ->
+            error({badvalue, {not_list, X}})
+    end.
+
 -doc #{equiv => new(Spec, Map, [])}.
 -spec new(spec(), #{atom() | binary() | string() => term()}) -> #{atom() | binary() => term()}.
 new(Spec, Map) ->
