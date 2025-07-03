@@ -275,21 +275,43 @@ constructor_function(Name, Obj) ->
     error(crap).
 
 snake_case(Str) ->
-    string:trim(snake_case1(Str), leading, "_").
+    snake_case(Str, []).
 
-snake_case1([]) ->
-    [];
-snake_case1([Ch]) ->
-    string:to_lower([Ch]);
-snake_case1([Ch1, Ch2 | Rest]) ->
-    case string:lowercase([Ch1, Ch2]) of
-        [Ch1, Ch2] ->
-            [Ch1 | snake_case1([Ch2 | Rest])];
-        [Ch3, Ch2] ->
-            [$_, Ch3 | snake_case1([Ch2 | Rest])];
-        [Ch3, _Ch4] ->
-            [Ch3 | snake_case1([Ch2 | Rest])]
-    end.
+snake_case([], Words) ->
+    string:lowercase(string:join(lists:reverse(Words), "_"));
+snake_case(Str, Words) ->
+    {Word, Rest} = take_word(Str),
+    snake_case(Rest, [Word | Words]).
+
+take_word([C | Rest]) ->
+    take_word(Rest, [C]).
+take_word([], Word) ->
+    {lists:reverse(Word), []};
+take_word([C1, C2 | _] = Rest, [C3 | _] = Word) when
+    (C1 >= $A),
+    (C1 =< $Z),
+    (C2 >= $a),
+    (C2 =< $z),
+    (C3 >= $A),
+    (C3 =< $Z)
+->
+    {lists:reverse(Word), Rest};
+take_word([C | Rest], [LastC | _] = Word) when
+    (C >= $A), (C =< $Z), (LastC >= $A), (LastC =< $Z)
+->
+    %% Consecutive capitals are part of the same word
+    take_word(Rest, [C | Word]);
+take_word([C | _] = Rest, [N | _] = Word) when
+    (C >= $0),
+    (C =< $9),
+    (N < $0) or (N > $9)
+->
+    %% digits start a new word unless the follow another digit
+    {lists:reverse(Word), Rest};
+take_word([C | _] = Rest, Word) when (C >= $A) and (C =< $Z) ->
+    {lists:reverse(Word), Rest};
+take_word([C | Rest], Word) ->
+    take_word(Rest, [C | Word]).
 
 load_specs(Obj, TypeName) ->
     SubSpecs = [
