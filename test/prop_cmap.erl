@@ -4,292 +4,255 @@
 
 -compile([export_all]).
 
-cmap_integer() ->
-    frequency([{20, constrained_integer()}, {5, unconstrained_integer()}]).
+cmap_integer_spec() ->
+    ?LET(Constraint, integer_constraint(), {integer, Constraint}).
 
-cmap_string() ->
-    frequency([{20, constrained_string()}, {5, unconstrained_string()}]).
+cmap_boolean_spec() ->
+    {boolean, #{}}.
 
-cmap_datetime() ->
-    ?LET(
-        {DT, ParsedDT},
-        timestamp_or_datetime(),
-        {fun cmap:datetime/1, DT, ParsedDT}
-    ).
+cmap_number_spec() ->
+    {number, #{}}.
 
-cmap_enum() ->
-    ?LET(
-        Values,
-        ?SUCHTHAT(Values, list(atom()), length(Values) > 0),
-        ?LET(
-            {Value, EnumValue},
-            enum_value(Values),
-            {cmap:enum_(Values), Values, Value, EnumValue}
-        )
-    ).
+cmap_datetime_spec() ->
+    {datetime, #{}}.
 
-cmap_list_primitive_items() ->
-    ?LET(
-        Val,
-        oneof([
-            ?LAZY({string, cmap_string()}),
-            ?LAZY({enum, cmap_enum()}),
-            ?LAZY(
-                {integer,
-                    ?SUCHTHAT(
-                        {_, Constraint, _, _},
-                        cmap_integer(),
-                        maps:get(min, Constraint, maps:get(max, Constraint, inf)) =<
-                            maps:get(max, Constraint, inf)
-                    )}
-            ),
-            ?LAZY({datetime, cmap_datetime()})
-        ]),
-        case Val of
-            {string, {Fun, Constraint, _, _}} ->
-                ?LET(
-                    List,
-                    list(0, inf, constrained_string(Constraint)),
-                    begin
-                        Vals = [{Value, Parsed} || {_, _, Value, Parsed} <- List],
-                        {InputValues, ParsedValues} = lists:unzip(Vals),
-                        {
-                            cmap:list_(#{items => Fun}),
-                            #{items => Constraint},
-                            InputValues,
-                            ParsedValues
-                        }
-                    end
-                );
-            {enum, {Fun, EnumValues, _, _}} ->
-                ?LET(
-                    List,
-                    list(0, inf, enum_value(EnumValues)),
-                    begin
-                        {InputValues, ParsedValues} = lists:unzip(List),
-                        {
-                            cmap:list_(#{items => Fun}),
-                            #{items => EnumValues},
-                            InputValues,
-                            ParsedValues
-                        }
-                    end
-                );
-            {integer, {Fun, Constraint, _, _}} ->
-                ?LET(
-                    List,
-                    list(0, inf, constrained_integer(Constraint)),
-                    begin
-                        Vals = [V || {_, _, _, V} <- List],
-                        {cmap:list_(#{items => Fun}), #{items => Constraint}, Vals, Vals}
-                    end
-                );
-            {datetime, {Fun, _, _}} ->
-                ?LET(
-                    List,
-                    list(0, inf, timestamp_or_datetime()),
-                    begin
-                        {InputValues, ParsedValues} = lists:unzip(List),
-                        {
-                            cmap:list_(#{items => Fun}),
-                            #{items => datetime},
-                            InputValues,
-                            ParsedValues
-                        }
-                    end
-                )
-        end
-    ).
+cmap_string_spec() ->
+    ?LET(Constraint, string_constraint(), {string, Constraint}).
 
-cmap_primitive() ->
-    ?LET(
-        Val,
-        oneof([
-            ?LAZY({string, cmap_string()}),
-            ?LAZY({enum, cmap_enum()}),
-            ?LAZY(
-                {integer,
-                    ?SUCHTHAT(
-                        {_, Constraint, _, _},
-                        cmap_integer(),
-                        maps:get(min, Constraint, maps:get(max, Constraint, inf)) =<
-                            maps:get(max, Constraint, inf)
-                    )}
-            ),
-            ?LAZY({datetime, cmap_datetime()})
-        ]),
-        case Val of
-            {string, {Fun, Constraint, _, _}} ->
-                {string, Fun, Constraint};
-            {enum, {Fun, EnumValues, _, _}} ->
-                {enum, Fun, EnumValues};
-            {integer, {Fun, Constraint, _, _}} ->
-                {integer, Fun, Constraint};
-            {datetime, {Fun, _, _}} ->
-                {datetime, Fun, nil}
-        end
-    ).
+cmap_enum_spec() ->
+    ?LET(Values, enumeration(), {enum, Values}).
 
-cmap_list_objects() ->
-    ?LET(
-        {Constructor, Spec, _Keys, _Required, _Extra} = ObjSpec,
-        cmap_object_spec(),
-        %% TODO Required and extra
-        ?LET(
-            Objs,
-            list(cmap_object(ObjSpec)),
-            begin
-                {Input, Output} = lists:unzip(Objs),
-                %% TODO Not sure this spec is what I want, but it matches cmap_list_primitive_itmes()
-                {cmap:list_(#{items => Constructor}), #{items => Spec}, Input, Output}
-            end
-        )
-    ).
+cmap_list_spec() ->
+    cmap_list_spec(0).
+
+cmap_list_spec(Depth, MinLen, MaxLen) ->
+    ?LET(LengthConstraints, list_length_constraint(MinLen, MaxLen),
+         ?LET(ItemSpec, ?LAZY(cmap_value_spec(Depth - 1)), {list, LengthConstraints#{items => ItemSpec}})).
+
+cmap_list_spec(Depth) ->
+    ?LET(LengthConstraints, list_length_constraint(),
+         ?LET(ItemSpec, ?LAZY(cmap_value_spec(Depth - 1)), {list, LengthConstraints#{items => ItemSpec}})).
 
 cmap_object_spec() ->
-    ?LET(
-        Keys,
-        ?LET(L, list(atom()), lists:uniq(L)),
-        ?LET(
-            {KeySpecs, I},
-            {[{K, cmap_primitive()} || K <- Keys], integer(1, max(1, length(Keys)))},
-            begin
-                Spec = maps:from_list([{K, Ctor} || {K, {_, Ctor, _}} <- KeySpecs]),
-                Required =
-                    if
-                        Keys =:= [] -> [];
-                        true -> element(1, lists:split(I, Keys))
-                    end,
-                {
-                    fun(X) -> cmap:new(Spec, X, [{required, Required}]) end,
-                    {Spec, KeySpecs},
-                    Keys,
-                    Required,
-                    false
-                }
-            end
-        )
-    ).
+    cmap_object_spec(0).
 
-cmap_object({_Ctor, {_Spec, Constraints}, Keys, Required, _Extra}) ->
-    %% TODO extra keys
-    ?LET(
-        Vals,
-        [{K, cmap_primitive_value(ValueSpec)} || {K, ValueSpec} <- Constraints],
-        begin
-            Optional = Keys -- Required,
-            %%io:format("optional keys: ~p~nrequired keys: ~p~n", [Optional, Required]),
-            ?LET(
-                Missing,
-                subset(Optional),
-                begin
-                    %%io:format("Missing = ~p~n", [Missing]),
-                    InputObj = maps:from_list([{K, Input} || {K, {Input, _}} <- Vals]),
-                    OutputObj = maps:from_list([{K, Output} || {K, {_, Output}} <- Vals]),
-                    {maps:without(Missing, InputObj), maps:without(Missing, OutputObj)}
-                end
-            )
-        end
-    ).
+cmap_object_spec(Depth) ->
+    ?LET(Keys, 
+         ?LET(L, list(atom()), lists:uniq(L)), 
+         ?LET({Specs, I}, 
+              {[{K, ?LAZY(cmap_value_spec(Depth - 1))} || K <- Keys], integer(0, length(Keys))},
+              {object, {maps:from_list(Specs), [{required, lists:nthtail(I, Keys)}]}})).
 
-subset(Elements) ->
-    ?LET(
-        L,
-        proper_types:fixed_list([oneof([[], E]) || E <- Elements]),
-        lists:flatten(L)
-    ).
+cmap_value_spec(Depth) when Depth =< 0 ->
+    oneof([cmap_integer_spec(),
+           cmap_boolean_spec(),
+           cmap_number_spec(),
+           cmap_datetime_spec(),
+           cmap_string_spec()]);
+cmap_value_spec(Depth) ->
+    oneof([cmap_integer_spec(),
+           cmap_boolean_spec(),
+           cmap_number_spec(),
+           cmap_datetime_spec(),
+           cmap_string_spec(),
+           cmap_list_spec(Depth),
+           cmap_object_spec(Depth)]).
 
-cmap_primitive_value({string, _, Constraint}) ->
-    ?LET({_, _, Input, Output}, constrained_string(Constraint), {Input, Output});
-cmap_primitive_value({enum, _, EnumValues}) ->
-    enum_value(EnumValues);
-cmap_primitive_value({integer, _, Constraint}) ->
-    ?LET({_, _, _, Value}, constrained_integer(Constraint), {Value, Value});
-cmap_primitive_value({datetime, _, _}) ->
-    timestamp_or_datetime().
+enumeration() ->
+    ?SUCHTHAT(Vals, ?LET(L, list(atom()), lists:uniq(L)), length(Vals) > 0).
 
-enum_value(Values) ->
-    ?LET(
-        EnumValue,
-        oneof(Values),
-        {oneof([atom_to_binary(EnumValue), atom_to_list(EnumValue), EnumValue]), EnumValue}
-    ).
+list_length_constraint(Min, Max) ->
+    ?LET({X, Y},
+         {integer(Min, Max), integer(Min, Max)},
+         ?LET(LC, oneof(
+                    if 
+                        Max < inf, Min > 0 ->
+                            [[{min_length, min(X, Y)}, {max_length, max(X, Y)}]];
+                        Min > 0 ->
+                            [[{min_length, min(X, Y)}],
+                             [{min_length, min(X, Y)}, {max_length, max(X, Y)}]];
+                        Max < inf ->
+                            [[{max_length, max(X, Y)}],
+                             [{min_length, min(X, Y)}, {max_length, max(X, Y)}]];
+                        Min =:= 0, Max =:= inf ->
+                            [[], [{min_length, min(X, Y)}], [{max_length, max(X, Y)}],
+                             [{min_length, min(X, Y)}, {max_length, max(X, Y)}]]
+                    end),
+              maps:from_list(LC))).
+
+list_length_constraint() ->
+    list_length_constraint(0, inf).
+
+integer_constraint() ->
+    ?LET({X, Y},
+         {integer(), integer()},
+         begin
+             Min = min(X, Y),
+             Max = max(X, Y),
+             oneof([#{}, #{min => Min}, #{max => Max}, #{min => Min, max => Max}])
+         end).
+
+satisfiable_integer_constraint() ->
+    ?LET({X, Y},
+         {integer(), integer()},
+         begin
+             Min = min(X, Y),
+             Max = max(X, Y),
+             oneof([#{}, #{min => Min}, #{max => Max}, #{min => Min, max => Max}])
+         end).
+
+unsatisfiable_integer_constraint() ->
+    ?LET({X, Y}, 
+         ?SUCHTHAT({X, Y}, {integer(), integer()}, Y =/= X),
+         #{min => max(X, Y), max => min(X, Y)}).
 
 string_constraint() ->
-    frequency(
-        [
-            {15, ?LET(Len, non_neg_integer(), #{max_length => Len})},
-            {1, #{}}
-        ]
-    ).
+    frequency([{4, ?LET(Len, non_neg_integer(), #{max_length => Len})},
+               {1, #{}}]).
 
 string_constraint(I) ->
     ?LET(Len, integer(I, inf), #{max_length => Len}).
 
-integer_constraint() ->
-    frequency(
-        [
-            {2,
-                ?LET(
-                    {Min, Max},
-                    ?SUCHTHAT({Min, Max}, {integer(), integer()}, Max < Min),
-                    #{min => Min, max => Max}
-                )},
-            {2, #{}},
-            {5, ?LET(MinMax, integer(), #{min => MinMax, max => MinMax})},
-            {12, ?LET(Max, integer(), #{max => Max})},
-            {12, ?LET(Min, integer(), #{min => Min})},
-            {12,
-                ?LET(
-                    {Min, Max},
-                    ?SUCHTHAT({Min, Max}, {integer(), integer()}, Max > Min),
-                    #{min => Min, max => Max}
-                )}
-        ]
-    ).
+cmap_value({integer, Constraint}) ->
+    ?LET(I, integer(maps:get(min, Constraint, inf), maps:get(max, Constraint, inf)), {I, I});
+cmap_value({string, #{max_length := MaxLen}}) ->
+    ?LET(Str, utf8_string(MaxLen), cmap_string_value(Str));
+cmap_value({string, _}) ->
+    ?LET(Str, utf8_string(), cmap_string_value(Str));
+cmap_value({boolean, _}) ->
+    ?LET(B, boolean(), {B, B});
+cmap_value({number, _}) ->
+    ?LET(N, number(), {N, N});
+cmap_value({datetime, _}) ->
+    cmap_datetime_value();
+cmap_value({list, #{items := ItemSpec} = Constraints}) ->
+    MinLen = maps:get(min_length, Constraints, 0),
+    MaxLen = maps:get(max_length, Constraints, inf),
+    cmap_list_value(MinLen, MaxLen, cmap_value(ItemSpec));
+cmap_value({object, {Properties, Options}}) ->
+    ?LET(Vals, [{K, cmap_value(ValSpec)} || K := ValSpec <- Properties],
+         begin
+             Optional = maps:keys(Properties) -- proplists:get_value(required, Options, []),
+             ?LET(Missing, someof(Optional), 
+                  begin
+                      InputObj = maps:from_list([{K, Input} || {K, {Input, _}} <- Vals]),
+                      OutputObj = maps:from_list([{K, Output} || {K, {_, Output}} <- Vals]),
+                      {maps:without(Missing, InputObj), maps:without(Missing, OutputObj)}
+                  end)
+         end);
+cmap_value({enum, Values}) ->
+    ?LET(Val, oneof(Values), ?LET(V, oneof([atom_to_binary(Val), Val]), {V, Val})).
 
-unconstrained_string() ->
-    ?LET(
-        Str,
-        unicode_string(),
-        oneof([
-            {fun cmap:string/1, #{}, Str, unicode:characters_to_binary(Str)},
-            {
-                fun cmap:string/1,
-                #{},
-                unicode:characters_to_binary(Str),
-                unicode:characters_to_binary(Str)
-            }
-        ])
-    ).
+cmap_constructor({integer, Constraints}) when map_size(Constraints) =:= 0 ->
+    oneof([fun cmap:integer/1, cmap:integer_(Constraints)]);
+cmap_constructor({integer, Constraints}) ->
+    cmap:integer_(Constraints);
+cmap_constructor({string, Constraints}) when map_size(Constraints) =:= 0 ->
+    oneof([fun cmap:string/1, cmap:string_(Constraints)]);
+cmap_constructor({string, Constraints}) ->
+    cmap:string_(Constraints);
+cmap_constructor({boolean, _}) ->
+    fun cmap:boolean/1;
+cmap_constructor({number, _}) ->
+    fun cmap:number/1;
+cmap_constructor({datetime, _}) ->
+    fun cmap:datetime/1;
+cmap_constructor({list, #{items := ItemSpec} = Constraints}) ->
+    ?LET(Fun, cmap_constructor(ItemSpec), cmap:list_(Constraints#{items => Fun}));
+cmap_constructor({list, Constraints}) ->
+    cmap:list_(Constraints);
+cmap_constructor({object, {Properties, Options}}) ->
+    ?LET(Constructors,
+         [{K, cmap_constructor(Spec)} || K := Spec <- Properties],
+         fun(X) -> cmap:new(maps:from_list(Constructors), X, Options) end);
+cmap_constructor({enum, Values}) ->
+    cmap:enum_(Values).
 
-constrained_string() ->
-    constrained_string(string_constraint()).
+someof(Vals) ->
+    ?LET(I, integer(0, length(Vals)), choose_from(I, queue:from_list(Vals))).
 
-constrained_string(Constraints) when is_map(Constraints) ->
-    Constructor = cmap:string_(Constraints),
-    oneof([
-        ?LET(
-            Str,
-            unicode_string(Constraints),
-            {Constructor, Constraints, Str, unicode:characters_to_binary(Str)}
-        ),
-        ?LET(
-            Str,
-            unicode_string(Constraints),
-            {Constructor, Constraints, unicode:characters_to_binary(Str),
-                unicode:characters_to_binary(Str)}
-        )
-    ]);
-constrained_string(Constraint) ->
-    ?LET(Constraints, Constraint, constrained_string(Constraints)).
+choose_from(0, _) ->
+    [];
+choose_from(N, Vals) ->
+    H = queue:head(Vals),
+    T = queue:tail(Vals),
+    ?LET(Take, boolean(), if Take -> [H|choose_from(N - 1, T)]; true -> choose_from(N, queue:in(H, T)) end).
 
-unicode_string() ->
-    unicode_string(#{}).
-unicode_string(Constraints) when map_size(Constraints) =:= 0 ->
-    utf8_string();
-unicode_string(#{max_length := MaxLen}) ->
-    utf8_string(MaxLen).
+cmap_list_value(MinLen, MaxLen, ElementGen) ->
+    ?LET(List, list(ElementGen),
+         if length(List) < MinLen ->
+                 ?LET(List1, cmap_list_value(MinLen - length(List), 
+                                             if MaxLen == inf -> inf; true -> MaxLen - length(List) end,
+                                             ElementGen), 
+                      lists:unzip(List ++ lists:zip(element(1, List1), element(2, List1))));
+            length(List) >= MinLen, length(List) =< MaxLen ->
+                 lists:unzip(List);
+            length(List) > MaxLen ->
+                 lists:unzip(lists:nthtail(length(List) - MaxLen, List))
+         end).
+
+local_datetime() ->
+    ?SUCHTHAT(
+       {Date, _Time},
+       {{integer(1970, 9999), integer(1, 12), integer(1, 31)}, {
+           integer(0, 23), integer(0, 59), integer(0, 59)
+       }},
+       calendar:valid_date(Date)
+      ).
+
+%% This won't be needed in OTP 28
+to_system_time(DateTime) when DateTime >= {{1970, 1, 1}, {0, 0, 0}} ->
+    Offset = calendar:datetime_to_gregorian_seconds({{1970, 1, 1}, {0, 0, 0}}),
+    Secs = calendar:datetime_to_gregorian_seconds(DateTime),
+    Secs - Offset.
+
+cmap_datetime_value() ->
+    ?LET(DateTime, local_datetime(),
+         begin
+             RFC3339 = calendar:system_time_to_rfc3339(to_system_time(DateTime)),
+             frequency([
+               {1, {RFC3339, DateTime}},
+               {1, {unicode:characters_to_binary(RFC3339), DateTime}},
+               {2, {DateTime, DateTime}}])
+         end).
+
+cmap_string_value(Str) ->
+    BinStr = unicode:characters_to_binary(Str),
+    oneof([{Str, BinStr}, {BinStr, BinStr}]).
+
+%%% Generators for {Ctor, Input, Output} or {Ctor, Constraints, Input, Output} tuples
+
+spec_value(SpecGen) ->
+    ?LET(Spec = {_, Constraint}, SpecGen,
+         ?LET({Ctor, {InVal, OutVal}}, {cmap_constructor(Spec), cmap_value(Spec)},
+              {Ctor, Constraint, InVal, OutVal})).
+
+cmap_integer() ->
+    spec_value(cmap_integer_spec()).
+
+cmap_number() ->
+    spec_value(cmap_number_spec()).
+
+cmap_string() ->
+    spec_value(cmap_string_spec()).
+
+cmap_datetime() ->
+    spec_value(cmap_datetime_spec()).
+
+cmap_enum() ->
+    spec_value(cmap_enum_spec()).
+
+cmap_object() ->
+    cmap_object(0).
+cmap_object(Depth) ->
+    spec_value(cmap_object_spec(Depth)).
+
+cmap_list() ->
+    cmap_list(0).
+cmap_list(Depth) ->
+    spec_value(cmap_list_spec(Depth)).
+
+%%% Other useful generators
 
 long_string(MinLen) ->
     ?SUCHTHAT(
@@ -309,42 +272,6 @@ not_string_list() ->
 
 not_string() ->
     oneof([integer(), atom(), float(), tuple(), not_string_list()]).
-
-nonempyt_string() ->
-    ?SUCHTHAT(Str, unicode_string(), string:length(Str) > 0).
-
-timestamp_or_datetime() ->
-    oneof([?LET(DT, local_datetime(), {DT, DT}), rfc3339()]).
-
-local_datetime() ->
-    ?SUCHTHAT(
-        {Date, _Time},
-        {{integer(1970, 9999), integer(1, 12), integer(1, 31)}, {
-            integer(0, 23), integer(0, 59), integer(0, 59)
-        }},
-        calendar:valid_date(Date)
-    ).
-
-%% This won't be needed in OTP 28
-to_system_time(DateTime) when DateTime > {{1970, 1, 1}, {0, 0, 0}} ->
-    Offset = calendar:datetime_to_gregorian_seconds({{1970, 1, 1}, {0, 0, 0}}),
-    Secs = calendar:datetime_to_gregorian_seconds(DateTime),
-    Secs - Offset.
-
-rfc3339() ->
-    ?LET(
-        DateTime,
-        local_datetime(),
-        {
-            oneof([
-                unicode:characters_to_binary(
-                    calendar:system_time_to_rfc3339(to_system_time(DateTime))
-                ),
-                calendar:system_time_to_rfc3339(to_system_time(DateTime))
-            ]),
-            DateTime
-        }
-    ).
 
 not_datetime() ->
     ?SUCHTHAT(
@@ -383,76 +310,13 @@ malformed_datetime() ->
             (S < 0) orelse (S > 59)
     ).
 
-unconstrained_integer() ->
-    ?LET(I, integer(), {fun cmap:integer/1, #{}, I, I}).
-
-constrained_integer() ->
-    constrained_integer(integer_constraint()).
-
-constrained_integer(Constraints) when is_map(Constraints) ->
-    Min = maps:get(min, Constraints, inf),
-    Max = maps:get(max, Constraints, inf),
-    if
-        Min > Max, (Min =/= inf) and (Max =/= inf) ->
-            {cmap:integer_(Constraints), Constraints, impossible, impossible};
-        true ->
-            ?LET(V, integer(Min, Max), {cmap:integer_(Constraints), Constraints, V, V})
-    end;
-constrained_integer(Constraint) ->
-    ?LET(Constraints, Constraint, constrained_integer(Constraints)).
-
 cmap_key() ->
-    oneof([?LET(A, atom(), {A, A}), ?LET(A, atom(), {A, atom_to_binary(A)})]).
+    ?LET(A, atom(), {A, oneof([A, atom_to_binary(A)])}).
 
-list(MinLen, MaxLen) ->
-    list(MinLen, MaxLen, term()).
-
-list(MinLen, MaxLen, ElemGen) ->
-    ?LET(List, list(ElemGen), list(MinLen, MaxLen, List, ElemGen)).
-
-list(_MinLen, MaxLen, List, _) when MaxLen =/= inf, length(List) >= MaxLen ->
-    {L, _} = lists:split(MaxLen, List),
-    L;
-list(MinLen, MaxLen, List, ElemGen) when length(List) < MinLen ->
-    ?LET(L, list(ElemGen), list(MinLen, MaxLen, List ++ L, ElemGen));
-list(MinLen, MaxLen, List, ElemGen) when
-    length(List) >= MinLen,
-    length(List) < MaxLen
-->
-    oneof([List, ?LET(L, list(ElemGen), list(MinLen, MaxLen, List ++ L, ElemGen))]).
-
-cmap_length_constrained_list() ->
-    ?LET(
-        {Min, Max},
-        ?SUCHTHAT({Min, Max}, {non_neg_integer(), non_neg_integer()}, Min =< Max),
-        ?LET(
-            Constraint,
-            oneof(
-                [
-                    #{},
-                    #{max_length => Max},
-                    #{min_length => Min},
-                    #{min_length => Min, max_length => Max}
-                ]
-            ),
-            {
-                cmap:list_(Constraint),
-                Constraint,
-                list(maps:get(min_length, Constraint, 0), maps:get(max_length, Constraint, inf))
-            }
-        )
-    ).
+%%% Properties
 
 -define(maybe_error(Expr, ExpectedGood, ExpectedErrors, ErrorExpected),
-    try
-        (ExpectedGood =:= (Expr)) andalso (not (ErrorExpected))
-    catch
-        error:badarg ->
-            (Expr);
-        error:Err ->
-            (ErrorExpected) andalso lists:any(fun(E) -> Err =:= (E) end, ExpectedErrors)
-    end
-).
+        maybe_error(fun () -> Expr end, ExpectedGood, ExpectedErrors, ErrorExpected)).
 
 maybe_error(Fun, ExpectedGood, ExpectedErrors, ErrorExpected) ->
     try
@@ -538,7 +402,7 @@ prop_cmap_string_too_long() ->
 
 prop_cmap_datetime() ->
     ?FORALL(
-        {{Fun, DT, DateTime}, {Key, K}},
+        {{Fun, _, DT, DateTime}, {Key, K}},
         {cmap_datetime(), cmap_key()},
         begin
             #{Key => DateTime} =:= cmap:new(#{Key => Fun}, #{K => DT})
@@ -547,7 +411,7 @@ prop_cmap_datetime() ->
 
 prop_cmap_not_datetime() ->
     ?FORALL(
-        {{Fun, _, _}, NotDateTime, {Key, K}},
+        {{Fun, _, _, _}, NotDateTime, {Key, K}},
         {cmap_datetime(), not_datetime(), cmap_key()},
         begin
             Errs =
@@ -657,48 +521,40 @@ prop_cmap_not_number() ->
         )
     ).
 
-prop_cmap_list_length() ->
-    ?FORALL(
-        {{Fun, _Constraint, List}, {Key, K}},
-        {cmap_length_constrained_list(), cmap_key()},
-        #{Key => List} =:= cmap:new(#{Key => Fun}, #{K => List})
-    ).
-
 prop_cmap_list_too_short() ->
-    ?FORALL(
-        {MinLen, {Key, K}},
-        {pos_integer(), cmap_key()},
-        begin
-            List = lists:duplicate(MinLen - 1, foo),
-            ?maybe_error(
-                cmap:new(
-                    #{Key => cmap:list_(#{min_length => MinLen})},
-                    #{K => List}
-                ),
-                nil,
-                [{badvalue, {too_short, List}}],
-                true
-            )
-        end
-    ).
-
+    ?FORALL({Len, Ctor, Items},
+            ?LET(ListSpec = {_, #{min_length := Len}},
+                 cmap_list_spec(0, 1, inf),
+                 ?LET({Ctor, {InVals, _}}, 
+                      {cmap_constructor(ListSpec), cmap_value(ListSpec)},
+                      {Len, Ctor, InVals})),
+            begin
+                {ShortList, _} = lists:split(Len - 1, Items),
+                ?maybe_error(
+                   cmap:new(#{foo => Ctor}, #{foo => ShortList}),
+                   nil,
+                   [{badvalue, {too_short, ShortList}}],
+                   true
+                  )
+            end).
+            
 prop_cmap_list_too_long() ->
-    ?FORALL(
-        {MaxLen, {Key, K}},
-        {non_neg_integer(), cmap_key()},
-        begin
-            List = lists:duplicate(MaxLen + 1, foo),
-            ?maybe_error(
-                cmap:new(
-                    #{Key => cmap:list_(#{max_length => MaxLen})},
-                    #{K => List}
-                ),
-                nil,
-                [{badvalue, {too_long, List}}],
-                true
-            )
-        end
-    ).
+    ?FORALL({Ctor, Items},
+            ?LET(ListSpec = {_, #{max_length := Len} = Constraints},
+                 ?SUCHTHAT({_, Constraint}, cmap_list_spec(),
+                           maps:get(max_length, Constraint, inf) < inf),
+                 ?LET({Ctor, {InVals, _}}, 
+                      {cmap_constructor(ListSpec), 
+                       cmap_value({list, maps:without([max_length], Constraints#{min_length => Len + 1})})},
+                      {Ctor, InVals})),
+            begin
+                ?maybe_error(
+                   cmap:new(#{foo => Ctor}, #{foo => Items}),
+                   nil,
+                   [{badvalue, {too_long, Items}}],
+                   true
+                  )
+            end).
 
 prop_cmap_list_not_list() ->
     ?FORALL(
@@ -721,64 +577,80 @@ prop_cmap_list_not_list() ->
         end
     ).
 
-prop_cmap_list_primitive_items() ->
-    ?FORALL(
-        {{Fun, _Constraint, Inputs, Outputs}, {Key, K}},
-        {cmap_list_primitive_items(), cmap_key()},
-        #{Key => Outputs} =:= cmap:new(#{Key => Fun}, #{K => Inputs})
-    ).
+prop_cmap_list() ->
+    ?FORALL({{Fun, _, Input, Output}, {Key, K}}, 
+            {cmap_list(), cmap_key()},
+            #{Key => Output} =:= cmap:new(#{Key => Fun}, #{K => Input})).
 
-prop_cmap_list_objects() ->
-    ?FORALL(
-        {{Fun, _Constraint, Inputs, Outputs}, {Key, K}},
-        {cmap_list_objects(), cmap_key()},
-        #{Key => Outputs} =:= cmap:new(#{Key => Fun}, #{K => Inputs})
-    ).
+prop_cmap_deep_list() ->
+    ?FORALL({{Fun, _, Inputs, Outputs}, {Key, K}},
+            {?LET(Depth, integer(1, 5), cmap_list(Depth)), cmap_key()},
+            #{Key => Outputs} =:= cmap:new(#{Key => Fun}, #{K => Inputs})).
+
+anything_but({IType, _} = Spec) ->
+    Options = [{integer, cmap_integer_spec()},
+               {boolean, cmap_boolean_spec()},
+               {number, cmap_number_spec()},
+               {datetime, cmap_datetime_spec()},
+               {string, cmap_string_spec()},
+               {list, cmap_list_spec(0)},
+               {object, cmap_object_spec(0)}],
+    Gens = [Gen || {T, Gen} <- Options, T =/= IType],
+    ?LET(Ctor,
+         cmap_constructor(Spec),
+         ?SUCHTHAT({Val, _},
+                   ?LET(BSpec, 
+                        oneof(Gens),
+                        ?LET(Vals, cmap_value(BSpec), Vals)),
+                   try Ctor(Val) of _ -> false catch _:_ -> true end)).
+
+invalid_list() ->
+    ?LET({_, Constraints} = ListSpec,
+         ?SUCHTHAT(
+            {list, Constr},
+            ?LET(I, pos_integer(), cmap_list_spec(2, I, inf)), 
+            is_map_key(items, Constr)),
+         begin
+         ?LET({BadItem, Ctor},
+              ?LET({Item, ItemOut},
+                   anything_but(maps:get(items, Constraints)),
+                   {?LET(I, oneof([Item, ItemOut]), I), cmap_constructor(ListSpec)}),
+              ?LET({Vals, _}, cmap_value(ListSpec),
+                   ?LET({P, Ps},
+                        ?SUCHTHAT(
+                           {P, Ps}, 
+                           {?SUCHTHAT(P, float(0.0, 1.0), P > 0.0), vector(length(Vals), float(0.0, 1.0))},
+                           lists:any(fun(X) -> X < P end, Ps)),
+                        {Ctor, Constraints,
+                         [if X < P -> BadItem; X >= P -> Val end 
+                          || {X, Val} <- lists:zip(Ps, Vals)]}))) end).
 
 prop_cmap_list_invalid() ->
     ?FORALL(
         {Fun, _Constraint, Inputs},
-        ?LET(
-            {Fun, Constraint, Inputs, Outputs},
-            oneof([cmap_list_objects(), cmap_list_primitive_items()]),
-            ?LET(
-                Objs,
-                ?SUCHTHAT(
-                    Objs,
-                    list(
-                        1,
-                        inf,
-                        if
-                            length(Inputs) > 0 ->
-                                frequency(
-                                    [
-                                        {1, oneof(lists:zip(Inputs, Outputs))},
-                                        {4, ?LET(V, cmap_primitive(), cmap_primitive_value(V))}
-                                    ]
-                                );
-                            length(Inputs) =:= 0 ->
-                                ?LET(V, cmap_primitive(), cmap_primitive_value(V))
-                        end
-                    ),
-                    begin
-                        {Inputs1, _} = lists:unzip(Objs),
-                        try Fun(Inputs1) of
-                            _ -> false
-                        catch
-                            _:_ -> true
-                        end
-                    end
-                ),
-                begin
-                    {Inputs1, _} = lists:unzip(Objs),
-                    {Fun, Constraint, Inputs1}
-                end
-            )
-        ),
+        invalid_list(),
         try cmap:new(#{foo => Fun}, #{foo => Inputs}) of
-            _ -> false
+            E -> 
+                io:format("Incorrect -> ~p~n", [E]),
+                false
         catch
             error:{badvalue, {baditem, _}} ->
                 true
         end
     ).
+
+prop_wrong_type() ->
+    ?FORALL(
+       {Ctor, {BadIn, BadOut}},
+       ?LET(GoodSpec,
+            resize(10, ?SIZED(Size, cmap_value_spec(Size))),
+            {cmap_constructor(GoodSpec), anything_but(GoodSpec)}),
+       try Ctor(BadIn) of 
+           _ -> false 
+       catch _:_ ->
+               try Ctor(BadOut) of
+                   _ -> false
+               catch _:_ ->
+                       true
+               end
+       end).
