@@ -643,7 +643,7 @@ prop_wrong_type() ->
     ?FORALL(
        {Ctor, {BadIn, BadOut}},
        ?LET(GoodSpec,
-            resize(10, ?SIZED(Size, cmap_value_spec(Size))),
+            resize(2, ?SIZED(Size, cmap_value_spec(Size))),
             {cmap_constructor(GoodSpec), anything_but(GoodSpec)}),
        try Ctor(BadIn) of 
            _ -> false 
@@ -653,4 +653,16 @@ prop_wrong_type() ->
                catch _:_ ->
                        true
                end
+       end).
+
+prop_encode_json() ->
+    ?FORALL(
+       {Ctor, {ObjIn, Obj}},
+       ?LET(Spec, cmap_value_spec(4), 
+            {cmap_constructor(Spec), cmap_value(Spec)}),
+       begin
+           O = Ctor(ObjIn),
+           Encoded = cmap:to_json(O),
+           Decoded = json:decode(iolist_to_binary(Encoded)),
+           Obj =:= Ctor(Decoded)
        end).

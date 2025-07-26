@@ -6,7 +6,7 @@ This module defines functions for constructing and validating maps
 with constrained keys and values.
 """.
 
--export([new/2, new/3]).
+-export([new/2, new/3, to_json/1]).
 -export([
     string/1,
     string_/1,
@@ -268,3 +268,19 @@ to_key(K, Keys) when is_list(K) ->
         error:badarg ->
             unicode:characters_to_binary(K)
     end.
+
+json_encoder(Term, Encoder) when is_map(Term) ->
+    json:encode_map(Term, Encoder);
+json_encoder(Term, Encoder) when is_list(Term) ->
+    json:encode_list(Term, Encoder);
+json_encoder({{Y, M, D}, {Hr, Min, Sec}}, Encoder) ->
+    %% cmap:datetime/1 converts rfc3339 timestamps to UTC, we will
+    %% assume that all datetimes in cmap maps are UTC.
+    Str = unicode:characters_to_binary(
+            io_lib:format("~4..0B-~2..0B-~2..0BT~2..0B:~2..0B:~2..0BZ", [Y, M, D, Hr, Min, Sec])),
+    json:encode_value(Str, Encoder);
+json_encoder(Term, Encoder) ->
+    json:encode_value(Term, Encoder).
+
+to_json(CMap) ->
+    json:encode(CMap, fun json_encoder/2).
