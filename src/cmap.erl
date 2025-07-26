@@ -133,7 +133,7 @@ integer(I) ->
 
 -spec integer_(integer_constraints()) -> fun((integer()) -> integer()).
 integer_(Constraints) ->
-    fun(I) ->
+    fun(I) when is_integer(I) ->
         Sat = maps:fold(
             fun
                 (min, Min, Acc) ->
@@ -147,7 +147,9 @@ integer_(Constraints) ->
         if
             Sat -> I;
             not Sat -> error({badvalue, {invalid, I}})
-        end
+        end;
+       (I) ->
+            error({badvalue, {not_an_integer, I}})
     end.
 
 -spec number(Num :: number()) -> number().
