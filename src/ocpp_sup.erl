@@ -31,7 +31,17 @@ init([]) ->
         intensity => 0,
         period => 1
     },
-    ChildSpecs = [],
+    ChildSpecs = [
+        #{
+            id => ocpp_manager,
+            start => {ocpp_manager, start_link, []}
+        },
+        #{
+            id => ocpp_station_supsup,
+            start => {ocpp_station_supsup, start_link, []},
+            type => supervisor
+        }
+    ],
     {ok, {SupFlags, ChildSpecs}}.
 
 %% internal functions

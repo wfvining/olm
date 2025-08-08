@@ -128,7 +128,7 @@ gen(Args = #{schemadir := Path, module := Module}) ->
         ]
     ),
     ExportTypes1 = string:replace(erl_prettypr:format(ExportTypes), "eXpOrT_TyPe", "export_type"),
-    ExportMessageType = "-export_type([message/1, payload_type/0, payload/0]).",
+    ExportMessageType = "-export_type([message/1, payload_type/0, payload/0, action/0]).",
     OutDir = maps:get(outdir, Args, "."),
     Datetime = calendar:system_time_to_rfc3339(erlang:system_time(second)),
     Admonition =

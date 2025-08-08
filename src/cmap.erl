@@ -133,22 +133,23 @@ integer(I) ->
 
 -spec integer_(integer_constraints()) -> fun((integer()) -> integer()).
 integer_(Constraints) ->
-    fun(I) when is_integer(I) ->
-        Sat = maps:fold(
-            fun
-                (min, Min, Acc) ->
-                    Acc andalso I >= Min;
-                (max, Max, Acc) ->
-                    Acc andalso I =< Max
-            end,
-            true,
-            Constraints
-        ),
-        if
-            Sat -> I;
-            not Sat -> error({badvalue, {invalid, I}})
-        end;
-       (I) ->
+    fun
+        (I) when is_integer(I) ->
+            Sat = maps:fold(
+                fun
+                    (min, Min, Acc) ->
+                        Acc andalso I >= Min;
+                    (max, Max, Acc) ->
+                        Acc andalso I =< Max
+                end,
+                true,
+                Constraints
+            ),
+            if
+                Sat -> I;
+                not Sat -> error({badvalue, {invalid, I}})
+            end;
+        (I) ->
             error({badvalue, {not_an_integer, I}})
     end.
 
@@ -277,7 +278,8 @@ json_encoder({{Y, M, D}, {Hr, Min, Sec}}, Encoder) ->
     %% cmap:datetime/1 converts rfc3339 timestamps to UTC, we will
     %% assume that all datetimes in cmap maps are UTC.
     Str = unicode:characters_to_binary(
-            io_lib:format("~4..0B-~2..0B-~2..0BT~2..0B:~2..0B:~2..0BZ", [Y, M, D, Hr, Min, Sec])),
+        io_lib:format("~4..0B-~2..0B-~2..0BT~2..0B:~2..0B:~2..0BZ", [Y, M, D, Hr, Min, Sec])
+    ),
     json:encode_value(Str, Encoder);
 json_encoder(Term, Encoder) ->
     json:encode_value(Term, Encoder).
