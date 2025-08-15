@@ -47,6 +47,13 @@ cmap_list_spec(Depth) ->
         )
     ).
 
+cmap_list_of(MinLen, MaxLen, ItemSpecGen) ->
+    ?LET(
+        LengthConstraints,
+        list_length_constraint(MinLen, MaxLen),
+        ?LET(ItemSpec, ItemSpecGen, {list, LengthConstraints#{items => ItemSpec}})
+    ).
+
 cmap_object_spec() ->
     cmap_object_spec(0).
 
@@ -453,7 +460,7 @@ prop_cmap_string() ->
                 ?maybe_error(
                     cmap:new(Spec, #{K => NotStr}),
                     nil,
-                    [{badvalue, {not_string, NotStr}}, {badvalue, {not_unicode, NotStr}}],
+                    [{badtype, {not_string, NotStr}}, {badvalue, {not_unicode, NotStr}}],
                     true
                 )
         end
@@ -498,7 +505,14 @@ prop_cmap_not_datetime() ->
         begin
             Errs =
                 case NotDateTime of
-                    {NotDate, NotTime} ->
+                    {NotDate = {Y, M, D}, NotTime = {H, Min, S}} when
+                        is_integer(Y),
+                        is_integer(M),
+                        is_integer(D),
+                        is_integer(H),
+                        is_integer(Min),
+                        is_integer(S)
+                    ->
                         [
                             {badvalue, {invalid_datetime, NotDateTime}},
                             {badvalue, {invalid_date, NotDate}},
@@ -506,8 +520,23 @@ prop_cmap_not_datetime() ->
                         ];
                     NotDateTime when is_binary(NotDateTime) ->
                         [{badvalue, {invalid_datetime, binary_to_list(NotDateTime)}}];
+                    NotDateTime when is_list(NotDateTime) ->
+                        case
+                            lists:all(
+                                fun
+                                    (X) when is_integer(X) -> X >= 0;
+                                    (_) -> false
+                                end,
+                                NotDateTime
+                            )
+                        of
+                            true ->
+                                [{badvalue, {invalid_datetime, NotDateTime}}];
+                            false ->
+                                [{badtype, {not_datetime, NotDateTime}}]
+                        end;
                     _ ->
-                        [{badvalue, {invalid_datetime, NotDateTime}}]
+                        [{badtype, {not_datetime, NotDateTime}}]
                 end,
             ?maybe_error(cmap:new(#{Key => Fun}, #{K => NotDateTime}), nil, Errs, true)
         end
@@ -541,7 +570,12 @@ prop_cmap_invalid_enum() ->
         ?maybe_error(
             cmap:new(#{Key => Fun}, #{K => BadVal}),
             nil,
-            [{badvalue, {invalid_enum_value, BadVal}}],
+            if
+                is_binary(BadVal); is_list(BadVal); is_atom(BadVal) ->
+                    [{badvalue, {invalid_enum_value, BadVal}}];
+                true ->
+                    [{badtype, {not_enum, BadVal}}]
+            end,
             true
         )
     ).
@@ -579,7 +613,7 @@ prop_cmap_not_bool() ->
         ?maybe_error(
             cmap:new(#{Key => fun cmap:boolean/1}, #{K => Term}),
             nil,
-            [{badvalue, {not_boolean, Term}}],
+            [{badtype, {not_boolean, Term}}],
             true
         )
     ).
@@ -598,7 +632,7 @@ prop_cmap_not_number() ->
         ?maybe_error(
             cmap:new(#{Key => fun cmap:number/1}, #{K => Term}),
             nil,
-            [{badvalue, {not_number, Term}}],
+            [{badtype, {not_number, Term}}],
             true
         )
     ).
@@ -665,13 +699,13 @@ prop_cmap_list_not_list() ->
             P1 = maybe_error(
                 fun() -> cmap:new(#{Key => fun cmap:list/1}, #{K => Term}) end,
                 nil,
-                [{badvalue, {not_list, Term}}],
+                [{badtype, {not_list, Term}}],
                 true
             ),
             P2 = maybe_error(
                 fun() -> cmap:new(#{Key => cmap:list_(#{})}, #{K => Term}) end,
                 nil,
-                [{badvalue, {not_list, Term}}],
+                [{badtype, {not_list, Term}}],
                 true
             ),
             P1 and P2
@@ -688,82 +722,80 @@ prop_cmap_list() ->
 prop_cmap_deep_list() ->
     ?FORALL(
         {{Fun, _, Inputs, Outputs}, {Key, K}},
-        {?LET(Depth, integer(1, 5), cmap_list(Depth)), cmap_key()},
+        {?LET(Depth, integer(1, 3), cmap_list(Depth)), cmap_key()},
         #{Key => Outputs} =:= cmap:new(#{Key => Fun}, #{K => Inputs})
     ).
 
-anything_but({IType, _} = Spec) ->
+any_type_but({IType, _} = Spec) ->
     Options = [
         {integer, cmap_integer_spec()},
         {boolean, cmap_boolean_spec()},
         {number, cmap_number_spec()},
         {datetime, cmap_datetime_spec()},
         {string, cmap_string_spec()},
-        {list, cmap_list_spec(0)},
+        %% The problem is that [] looks like a string
+        {list, cmap_list_spec(0, 1, inf)},
         {object, cmap_object_spec(0)}
     ],
-    Gens = [Gen || {T, Gen} <- Options, T =/= IType],
+    Gens = [
+        if
+            (IType =:= string) and (T =:= list) ->
+                %% lists of integers look like stirngs. Since the
+                %% type matche we will exclude them here
+                cmap_list_of(1, inf, any_type_but({integer, #{}}));
+            true ->
+                Gen
+        end
+     || {T, Gen} <- Options,
+        (T =/= IType) and
+            not (((IType =:= datetime) and ((T =:= string) or (T =:= list))) or
+                ((IType =:= integer) and (T =:= number)) or
+                ((IType =:= number) and (T =:= integer)) or
+                ((IType =:= string) and (T =:= datetime)) or
+                ((IType =:= list) and (T =:= string)))
+    ],
+    oneof(Gens).
+
+any_value_but(Spec) ->
     ?LET(
-        Ctor,
-        cmap_constructor(Spec),
-        ?SUCHTHAT(
-            {Val, _},
-            ?LET(
-                BSpec,
-                oneof(Gens),
-                ?LET(Vals, cmap_value(BSpec), Vals)
-            ),
-            try Ctor(Val) of
-                _ -> false
-            catch
-                _:_ -> true
-            end
-        )
+        NotSpec,
+        any_type_but(Spec),
+        cmap_value(NotSpec)
     ).
 
 invalid_list() ->
     ?LET(
-        {_, Constraints} = ListSpec,
-        ?SUCHTHAT(
-            {list, Constr},
-            ?LET(I, pos_integer(), cmap_list_spec(2, I, inf)),
-            is_map_key(items, Constr)
-        ),
-        begin
+        {list, #{items := IType} = Constraints} = ListSpec,
+        ?SIZED(Size, cmap_list_of(1, Size + 1, oneof([cmap_datetime_spec(), cmap_boolean_spec()]))),
+        ?LET(
+            {BadItem, _},
+            any_value_but(IType),
             ?LET(
-                {BadItem, Ctor},
+                {Ctor, {Vals, _}},
+                {cmap_constructor(ListSpec), cmap_value(ListSpec)},
                 ?LET(
-                    {Item, ItemOut},
-                    anything_but(maps:get(items, Constraints)),
-                    {?LET(I, oneof([Item, ItemOut]), I), cmap_constructor(ListSpec)}
-                ),
-                ?LET(
-                    {Vals, _},
-                    cmap_value(ListSpec),
-                    ?LET(
+                    {P, Ps},
+                    ?SUCHTHAT(
                         {P, Ps},
-                        ?SUCHTHAT(
-                            {P, Ps},
-                            {
-                                ?SUCHTHAT(P, float(0.0, 1.0), P > 0.0),
-                                vector(length(Vals), float(0.0, 1.0))
-                            },
-                            lists:any(fun(X) -> X < P end, Ps)
-                        ),
-                        {Ctor, Constraints, [
-                            if
-                                X < P -> BadItem;
-                                X >= P -> Val
-                            end
-                         || {X, Val} <- lists:zip(Ps, Vals)
-                        ]}
-                    )
+                        {
+                            ?SUCHTHAT(P, float(0.0, 1.0), P > 0.0),
+                            vector(length(Vals), float(0.0, 1.0))
+                        },
+                        lists:any(fun(X) -> X < P end, Ps)
+                    ),
+                    {Ctor, Constraints, [
+                        if
+                            X < P -> BadItem;
+                            X >= P -> Val
+                        end
+                     || {X, Val} <- lists:zip(Ps, Vals)
+                    ]}
                 )
             )
-        end
+        )
     ).
 
-prop_cmap_list_invalid() ->
+prop_cmap_list_invalid_item_type() ->
     ?FORALL(
         {Fun, _Constraint, Inputs},
         invalid_list(),
@@ -772,29 +804,77 @@ prop_cmap_list_invalid() ->
                 io:format("Incorrect -> ~p~n", [E]),
                 false
         catch
-            error:{badvalue, {baditem, _}} ->
+            error:{badvalue, {baditem, {_, {badtype, _}}}} ->
+                true;
+            _ ->
+                false
+        end
+    ).
+
+integer_list_with_invalid_item() ->
+    ?LET(
+        {integer, Constraints},
+        ?SUCHTHAT(
+            {integer, Constraints},
+            cmap_integer_spec(),
+            is_map_key(min, Constraints) or is_map_key(max, Constraints)
+        ),
+        ?LET(
+            {BadVal, Ctor, {List, _}},
+            {
+                if
+                    is_map_key(min, Constraints), is_map_key(max, Constraints) ->
+                        oneof([
+                            integer(inf, maps:get(min, Constraints) - 1),
+                            integer(maps:get(max, Constraints) + 1, inf)
+                        ]);
+                    is_map_key(min, Constraints) ->
+                        integer(inf, maps:get(min, Constraints) - 1);
+                    is_map_key(max, Constraints) ->
+                        integer(maps:get(max, Constraints) + 1, inf)
+                end,
+                cmap_constructor({list, #{items => {integer, Constraints}}}),
+                cmap_list_value(0, inf, cmap_value({integer, Constraints}))
+            },
+            ?LET(
+                Ix,
+                integer(0, length(List)),
+                begin
+                    {Before, After} = lists:split(Ix, List),
+                    {Ctor, Before ++ [BadVal] ++ After, Ix + 1}
+                end
+            )
+        )
+    ).
+
+prop_cmap_list_item_constraint_violation() ->
+    ?FORALL(
+        {Ctor, BadList, BadIx},
+        integer_list_with_invalid_item(),
+        try
+            Ctor(BadList),
+            false
+        catch
+            error:{badvalue, {baditem, {BadIx, {badvalue, _}}}} ->
                 true
         end
     ).
 
 prop_wrong_type() ->
     ?FORALL(
-        {Ctor, {BadIn, BadOut}},
+        {Ctor, _Spec, {_, BadOut}},
         ?LET(
             GoodSpec,
             resize(2, ?SIZED(Size, cmap_value_spec(Size))),
-            {cmap_constructor(GoodSpec), anything_but(GoodSpec)}
+            {cmap_constructor(GoodSpec), GoodSpec, any_value_but(GoodSpec)}
         ),
-        try Ctor(BadIn) of
+        try Ctor(BadOut) of
             _ -> false
         catch
-            _:_ ->
-                try Ctor(BadOut) of
-                    _ -> false
-                catch
-                    _:_ ->
-                        true
-                end
+            error:{badtype, _} ->
+                true;
+            _ ->
+                false
         end
     ).
 

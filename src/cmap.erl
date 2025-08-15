@@ -40,14 +40,17 @@ string(Str) when is_list(Str) ->
         end,
         Str
     ),
+    ValidType = lists:all(fun is_integer/1, Str),
     if
-        Valid ->
+        ValidType and Valid ->
             unicode:characters_to_binary(Str);
-        true ->
-            error({badvalue, {not_unicode, Str}})
+        ValidType and not Valid ->
+            error({badvalue, {not_unicode, Str}});
+        not ValidType ->
+            error({badtype, {not_string, Str}})
     end;
 string(Term) ->
-    error({badvalue, {not_string, Term}}).
+    error({badtype, {not_string, Term}}).
 
 -doc """
 Return a constructor for a constrained string.
@@ -77,7 +80,18 @@ datetime(List) when is_list(List) ->
         calendar:system_time_to_universal_time(T, second)
     catch
         error:_ ->
-            error({badvalue, {invalid_datetime, List}})
+            case
+                lists:all(
+                    %% I is a unicode code point
+                    fun(I) -> is_integer(I) andalso I >= 0 andalso I =< 16#10ffff end,
+                    List
+                )
+            of
+                true ->
+                    error({badvalue, {invalid_datetime, List}});
+                false ->
+                    error({badtype, {not_datetime, List}})
+            end
     end;
 datetime(Datetime = {Date, {H, M, S}}) when H < 24, H >= 0, M < 60, M >= 0, S < 60, S >= 0 ->
     case calendar:valid_date(Date) of
@@ -89,7 +103,7 @@ datetime(Datetime = {Date, {H, M, S}}) when H < 24, H >= 0, M < 60, M >= 0, S < 
 datetime({{_, _, _}, Time = {_, _, _}}) ->
     error({badvalue, {invalid_time, Time}});
 datetime(Value) ->
-    error({badvalue, {invalid_datetime, Value}}).
+    error({badtype, {not_datetime, Value}}).
 
 -spec enum_(Values :: [atom()]) -> fun((atom() | binary()) -> atom()).
 enum_(Values) ->
@@ -122,14 +136,14 @@ enum_(Values) ->
                 false -> error({badvalue, {invalid_enum_value, Val}})
             end;
         (Val) ->
-            error({badvalue, {invalid_enum_value, Val}})
+            error({badtype, {not_enum, Val}})
     end.
 
 -spec integer(integer()) -> integer().
 integer(I) when is_integer(I) ->
     I;
 integer(I) ->
-    error({badvalue, {not_an_integer, I}}).
+    error({badtype, {not_integer, I}}).
 
 -spec integer_(integer_constraints()) -> fun((integer()) -> integer()).
 integer_(Constraints) ->
@@ -150,20 +164,20 @@ integer_(Constraints) ->
                 not Sat -> error({badvalue, {invalid, I}})
             end;
         (I) ->
-            error({badvalue, {not_an_integer, I}})
+            error({badtype, {not_integer, I}})
     end.
 
 -spec number(Num :: number()) -> number().
 number(Num) when is_number(Num) ->
     Num;
 number(NotNumber) ->
-    error({badvalue, {not_number, NotNumber}}).
+    error({badtype, {not_number, NotNumber}}).
 
 -spec boolean(Bool :: boolean()) -> boolean().
 boolean(Bool) when is_boolean(Bool) ->
     Bool;
 boolean(NotBool) ->
-    error({badvalue, {not_boolean, NotBool}}).
+    error({badtype, {not_boolean, NotBool}}).
 
 -doc """
 Constuct a list of any length with arbitrary items.
@@ -172,7 +186,7 @@ Constuct a list of any length with arbitrary items.
 list(List) when is_list(List) ->
     List;
 list(X) ->
-    error({badvalue, {not_list, X}}).
+    error({badtype, {not_list, X}}).
 
 -doc """
 Construct a constrained list.
@@ -204,7 +218,7 @@ list_(Options) ->
         (Xs) when is_list(Xs), length(Xs) > MaxLength ->
             error({badvalue, {too_long, Xs}});
         (X) ->
-            error({badvalue, {not_list, X}})
+            error({badtype, {not_list, X}})
     end.
 
 -doc #{equiv => new(Spec, Map, [])}.
@@ -218,7 +232,7 @@ new(Spec, Map) ->
     Options :: [Option]
 ) -> #{atom() | binary() => term()} when
     Option :: {required, [atom()]} | {extra_keys, boolean()} | extra_keys.
-new(Spec, Map, Options) ->
+new(Spec, Map, Options) when is_map(Map) ->
     Required = proplists:get_value(required, Options, []),
     maybe
         true ?= lists:all(fun(K) -> lists:member(K, maps:keys(Spec)) end, Required),
@@ -246,7 +260,9 @@ new(Spec, Map, Options) ->
             error(badarg);
         Missing when is_list(Missing), length(Missing) > 0 ->
             error({missing_keys, Missing})
-    end.
+    end;
+new(_, NotMap, _) ->
+    error({badtype, {not_map, NotMap}}).
 
 to_key(K, Keys) when is_atom(K) ->
     case lists:member(K, Keys) of
