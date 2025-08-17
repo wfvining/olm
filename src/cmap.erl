@@ -240,11 +240,11 @@ new(Spec, Map, Options) when is_map(Map) ->
             fun(K, V, Acc) ->
                 Key = to_key(K, maps:keys(Spec)),
                 case proplists:get_bool(extra_keys, Options) of
-                    false when is_binary(Key) ->
-                        error(badarg);
-                    false when is_atom(Key) ->
+                    false when is_atom(Key), is_map_key(Key, Spec) ->
                         Constructor = maps:get(Key, Spec),
                         Acc#{Key => Constructor(V)};
+                    false ->
+                        error({badvalue, {extra_key, K}});
                     true ->
                         Constructor = maps:get(Key, Spec, fun(X) -> X end),
                         Acc#{Key => Constructor(V)}

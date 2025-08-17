@@ -100,8 +100,9 @@ invalid_required_keys() ->
 extra_keys_test_() ->
     [
         {"extra keys not allowed by default", [
-            ?_assertError(badarg, cmap:new(#{}, #{x => 1})),
-            ?_assertError(badarg, cmap:new(#{y => fun cmap:integer/1}, #{x => 1}))
+            ?_assertError({badvalue, {extra_key, x}}, cmap:new(#{}, #{x => 1})),
+            ?_assertError({badvalue, {extra_key, x}}, cmap:new(#{y => fun cmap:integer/1}, #{x => 1})),
+            ?_assertError({badvalue, {extra_key, <<"x">>}}, cmap:new(#{}, #{<<"x">> => 1}))
         ]},
         {"extra keys allowed/atom",
             ?_assertEqual(#{<<"x">> => 1}, cmap:new(#{}, #{x => 1}, [extra_keys]))},
