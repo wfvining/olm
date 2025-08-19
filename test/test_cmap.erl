@@ -101,7 +101,9 @@ extra_keys_test_() ->
     [
         {"extra keys not allowed by default", [
             ?_assertError({badvalue, {extra_key, x}}, cmap:new(#{}, #{x => 1})),
-            ?_assertError({badvalue, {extra_key, x}}, cmap:new(#{y => fun cmap:integer/1}, #{x => 1})),
+            ?_assertError(
+                {badvalue, {extra_key, x}}, cmap:new(#{y => fun cmap:integer/1}, #{x => 1})
+            ),
             ?_assertError({badvalue, {extra_key, <<"x">>}}, cmap:new(#{}, #{<<"x">> => 1}))
         ]},
         {"extra keys allowed/atom",

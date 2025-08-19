@@ -4,7 +4,7 @@ Terms represnting OCPP messages. This module provides a thing wrapper
 around version-specific modules.
 """.
 
--export([version/1, encode/1, decode/4, decode_partial/3, decode_finish/2]).
+-export([version/1, module/1, encode/1, decode/4, type/1]).
 
 -export_type([message/0, raw_message/0]).
 
@@ -16,25 +16,30 @@ around version-specific modules.
     | ocpp_message_2_1:message().
 
 -define(MODULES, #{
-    "1.6" => ocpp_message_1_6,
-    "2.0.1" => ocpp_message_2_0_1,
-    "2.1" => ocpp_message_2_1
+    '1.6' => ocpp_message_1_6,
+    '2.0.1' => ocpp_message_2_0_1,
+    '2.1' => ocpp_message_2_1
+}).
+
+-define(VERSIONS, #{
+    ocpp_message_1_6 => '1.6',
+    ocpp_message_2_0_1 => '2.0.1',
+    ocpp_message_2_1 => '2.1'
 }).
 
 -doc """
-Returns the version-specific message module. If the version is not
-supported the call fails with reason `{unsupported, Version}`.
+Return the OCPP version used to create a message.
 """.
--spec version(string() | binary()) -> module().
-version(Version) when is_binary(Version) ->
-    version(binary_to_list(Version));
-version(Version) ->
-    try
-        maps:get(Version, ?MODULES)
-    catch
-        error:{badkey, Version} ->
-            error({unsupported, Version})
-    end.
+-spec version(message()) -> ocpp:version().
+version({MsgModule, _, _}) ->
+    maps:get(MsgModule, ?VERSIONS).
+
+-doc """
+Return the module for a specific OCPP version.
+""".
+-spec module(ocpp:version()) -> module().
+module(Version) ->
+    maps:get(Version, ?MODULES).
 
 -doc """
 Encode a message payload as JSON.
@@ -46,39 +51,25 @@ encode({_, _, Payload}) ->
 Decode a message payload.
 """.
 -spec decode(
-    Version :: string(),
-    PayloadType ::
-        ocpp_message_1_6:payload_type()
-        | ocpp_message_2_0_1:payload_type()
-        | ocpp_message_2_1:payload_type(),
+    Version :: ocpp:version(),
+    PayloadType :: binary(),
     Direction :: request | response,
     Payload :: json:decode_value()
 ) ->
-    {ok,
-        ocpp_message_2_0_1:message()
-        | ocpp_message_2_1:message()
-        | ocpp_message_1_6:message()}
+    {ok, message()}
     | {error, Reason :: term()}.
-decode("1.6", PayloadType, Direction, Payload) ->
+%% decode(_, _, _, Payload) when not is_map(Payload) ->
+%%     {error, bad_payload};
+decode('1.6', PayloadType, Direction, Payload) ->
     ocpp_message_1_6:decode(PayloadType, Direction, Payload);
-decode("2.0.1", PayloadType, Direction, Payload) ->
+decode('2.0.1', PayloadType, Direction, Payload) ->
     ocpp_message_2_0_1:decode(PayloadType, Direction, Payload);
-decode("2.1", PayloadType, Direction, Payload) ->
+decode('2.1', PayloadType, Direction, Payload) ->
     ocpp_message_2_1:decode(PayloadType, Direction, Payload).
 
--spec decode_partial(string(), request | response, #{binary() => json:decode_value()}) ->
-    raw_message().
-decode_partial(Version, Direction, Payload) ->
-    {raw_message, Version, Direction, Payload}.
-
--spec decode_finish(
-    PayloadType ::
-        ocpp_message_1_6:payload_type()
-        | ocpp_message_2_0_1:payload_type()
-        | ocpp_message_2_1:payload_type(),
-    raw_message()
-) ->
-    {ok, ocpp_message_1_6:message() | ocpp_message_2_0_1:message() | ocpp_message_2_1:message()}
-    | {error, Reason :: term()}.
-decode_finish(PayloadType, {raw_message, Version, Direction, Payload}) ->
-    decode(Version, PayloadType, Direction, Payload).
+-spec type(message()) ->
+    ocpp_message_1_6:payload_type()
+    | ocpp_message_2_0_1:payload_type()
+    | ocpp_message_2_1:payload_type().
+type({_Version, Type, _}) ->
+    Type.
