@@ -286,14 +286,24 @@ to_system_time(DateTime) when DateTime >= {{1970, 1, 1}, {0, 0, 0}} ->
 
 cmap_datetime_value() ->
     ?LET(
-        DateTime,
-        local_datetime(),
+        {UNIXSeconds, Offset},
+        {
+            resize(100, non_neg_integer()),
+            frequency([{3, "Z"}, {1, integer(-3600 * 12, 3600 * 12)}])
+        },
         begin
-            RFC3339 = calendar:system_time_to_rfc3339(to_system_time(DateTime)),
+            RFC3339 = calendar:system_time_to_rfc3339(
+                UNIXSeconds,
+                [{offset, Offset}]
+            ),
+            Expected = datetime:from_rfc3339(unicode:characters_to_binary(RFC3339)),
+            DateTime = calendar:system_time_to_local_time(
+                calendar:rfc3339_to_system_time(RFC3339), second
+            ),
             frequency([
-                {1, {RFC3339, DateTime}},
-                {1, {unicode:characters_to_binary(RFC3339), DateTime}},
-                {2, {DateTime, DateTime}}
+                {1, {RFC3339, Expected}},
+                {1, {unicode:characters_to_binary(RFC3339), Expected}},
+                {2, {DateTime, Expected}}
             ])
         end
     ).
@@ -494,7 +504,8 @@ prop_cmap_datetime() ->
         {{Fun, _, DT, DateTime}, {Key, K}},
         {cmap_datetime(), cmap_key()},
         begin
-            #{Key => DateTime} =:= cmap:new(#{Key => Fun}, #{K => DT})
+            #{Key := Result} = cmap:new(#{Key => Fun}, #{K => DT}),
+            Result =:= DateTime
         end
     ).
 
@@ -518,21 +529,14 @@ prop_cmap_not_datetime() ->
                             {badvalue, {invalid_date, NotDate}},
                             {badvalue, {invalid_time, NotTime}}
                         ];
-                    NotDateTime when is_binary(NotDateTime) ->
-                        [{badvalue, {invalid_datetime, binary_to_list(NotDateTime)}}];
-                    NotDateTime when is_list(NotDateTime) ->
-                        case
-                            lists:all(
-                                fun
-                                    (X) when is_integer(X) -> X >= 0;
-                                    (_) -> false
-                                end,
-                                NotDateTime
-                            )
-                        of
-                            true ->
-                                [{badvalue, {invalid_datetime, NotDateTime}}];
-                            false ->
+                    NotDateTime when is_binary(NotDateTime); is_list(NotDateTime) ->
+                        try unicode:characters_to_binary(NotDateTime) of
+                            {_, _, _} ->
+                                [{badtype, {not_datetime, NotDateTime}}];
+                            _ ->
+                                [{badvalue, {invalid_datetime, NotDateTime}}]
+                        catch
+                            _:_ ->
                                 [{badtype, {not_datetime, NotDateTime}}]
                         end;
                     _ ->

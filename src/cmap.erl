@@ -72,31 +72,37 @@ string_(#{max_length := MaxLen}) ->
 string_(_) ->
     fun cmap:string/1.
 
-datetime(Bin) when is_binary(Bin) ->
-    datetime(binary_to_list(Bin));
 datetime(List) when is_list(List) ->
+    try unicode:characters_to_binary(List) of
+        {_, _, _} ->
+            error({badtype, {not_datetime, List}});
+        Result ->
+            try
+                datetime(Result)
+            catch
+                error:{Err, {Reason, _}} ->
+                    error({Err, {Reason, List}})
+            end
+    catch
+        error:badarg ->
+            error({badtype, {not_datetime, List}})
+    end;
+datetime(Bin) when is_binary(Bin) ->
     try
-        T = calendar:rfc3339_to_system_time(List),
-        calendar:system_time_to_universal_time(T, second)
+        datetime:from_rfc3339(Bin)
     catch
         error:_ ->
-            case
-                lists:all(
-                    %% I is a unicode code point
-                    fun(I) -> is_integer(I) andalso I >= 0 andalso I =< 16#10ffff end,
-                    List
-                )
-            of
-                true ->
-                    error({badvalue, {invalid_datetime, List}});
-                false ->
-                    error({badtype, {not_datetime, List}})
+            case unicode:characters_to_list(Bin) of
+                {_, _, _} ->
+                    error({badtype, {not_datetime, Bin}});
+                _ ->
+                    error({badvalue, {invalid_datetime, Bin}})
             end
     end;
 datetime(Datetime = {Date, {H, M, S}}) when H < 24, H >= 0, M < 60, M >= 0, S < 60, S >= 0 ->
     case calendar:valid_date(Date) of
         true ->
-            Datetime;
+            datetime:from_local_time(Datetime);
         false ->
             error({badvalue, {invalid_date, Date}})
     end;
@@ -290,15 +296,13 @@ json_encoder(Term, Encoder) when is_map(Term) ->
     json:encode_map(Term, Encoder);
 json_encoder(Term, Encoder) when is_list(Term) ->
     json:encode_list(Term, Encoder);
-json_encoder({{Y, M, D}, {Hr, Min, Sec}}, Encoder) ->
-    %% cmap:datetime/1 converts rfc3339 timestamps to UTC, we will
-    %% assume that all datetimes in cmap maps are UTC.
-    Str = unicode:characters_to_binary(
-        io_lib:format("~4..0B-~2..0B-~2..0BT~2..0B:~2..0B:~2..0BZ", [Y, M, D, Hr, Min, Sec])
-    ),
-    json:encode_value(Str, Encoder);
 json_encoder(Term, Encoder) ->
-    json:encode_value(Term, Encoder).
+    case datetime:is_datetime(Term) of
+        true ->
+            json:encode_binary(datetime:to_rfc3339(Term));
+        false ->
+            json:encode_value(Term, Encoder)
+    end.
 
 to_json(CMap) ->
     json:encode(CMap, fun json_encoder/2).
