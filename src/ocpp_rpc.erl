@@ -2,6 +2,7 @@
 
 -export([decode/3]).
 -export([id/1, error_type/1, error_code/1, error_description/1]).
+-export([payload/1]).
 
 -export_type([error_code/0, rpctype/0]).
 -export_type([call/0, callresult/0, callerror/0, callresulterror/0, send/0]).
@@ -395,3 +396,10 @@ id(#callerror{id = ID}) ->
     ID;
 id(#callresulterror{id = ID}) ->
     ID.
+
+payload(#call{payload = Payload}) ->
+    Payload;
+payload(#callresult{payload = Payload}) ->
+    Payload;
+payload(#send{payload = Payload}) ->
+    Payload.
