@@ -567,7 +567,7 @@ object_type(Properties, Required, AllowExtra) ->
 property_type(#{<<"type">> := <<"string">>, <<"format">> := <<"date-time">>}) ->
     erl_syntax:type_application(
         erl_syntax:module_qualifier(
-            erl_syntax:atom(calendar),
+            erl_syntax:atom(datetime),
             erl_syntax:atom(datetime)
         ),
         []
