@@ -44,8 +44,9 @@ module(Version) ->
 -doc """
 Encode a message payload as JSON.
 """.
+-spec encode(message()) -> binary().
 encode({_, _, Payload}) ->
-    cmap:to_json(Payload).
+    iolist_to_binary(cmap:to_json(Payload)).
 
 -doc """
 Decode a message payload.
