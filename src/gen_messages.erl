@@ -183,7 +183,7 @@ gen(Args = #{schemadir := Path, module := Module}) ->
             "decode_with(Ctor, PayloadType, Payload) ->",
             "try _@module:Ctor(Payload) of",
             "Message ->",
-            "{ok, {_@module, PayloadType, Message}}",
+            "{ok, Message}",
             "catch",
             "_:Reason ->",
             "{error, Reason}",
