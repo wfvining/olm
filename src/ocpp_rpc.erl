@@ -1,6 +1,6 @@
 -module(ocpp_rpc).
 
--export([decode/3]).
+-export([decode/3, encode/1]).
 -export([id/1, error_type/1, error_code/1, error_description/1]).
 -export([payload/1]).
 
@@ -370,6 +370,19 @@ decode_result(Version, ID, _, _) ->
         {ErrorTag, #callresulterror{
             code = 'ProtocolError', id = ID, description = <<"Payload is not an object">>
         }}}.
+
+encode(#call{id = ID, action = Action, payload = Payload}) ->
+    iolist_to_binary(
+        json:encode(
+            [2, ID, Action, Payload],
+            fun
+                (Term, _Encoder) when is_tuple(Term) ->
+                    ocpp_message:encode(Term);
+                (Term, Encoder) ->
+                    json:encode_value(Term, Encoder)
+            end
+        )
+    ).
 
 error_type(#callerror{}) ->
     callerror;
