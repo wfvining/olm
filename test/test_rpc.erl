@@ -486,3 +486,39 @@ generic_unsupported_message_type_test_() ->
         end}
      || Version <- Versions, {Msg, ID} <- Messages
     ].
+
+encode_call_test_() ->
+    {"Calls can be encoded and decoded",
+        %% TODO expand to more message types and versions
+        fun() ->
+            Call = ocpp_rpc:call(
+                ocpp_message_2_0_1:boot_notification_request(
+                    #{
+                        reason => 'PowerUp',
+                        chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
+                    }
+                ),
+                <<"id">>
+            ),
+            Encoded = ocpp_rpc:encode(Call),
+            ?assertEqual({ok, {call, Call}}, ocpp_rpc:decode('2.0.1', Encoded, []))
+        end}.
+
+encode_callresult_test_() ->
+    {"CALLRESULT messages can be encoded and decoded", fun() ->
+        CallResult = ocpp_rpc:callresult(
+            ocpp_message_2_0_1:boot_notification_response(
+                #{
+                    status => 'Accepted',
+                    interval => 0,
+                    currentTime => {{2025, 1, 1}, {12, 12, 12}}
+                }
+            ),
+            <<"id">>
+        ),
+        Encoded = ocpp_rpc:encode(CallResult),
+        ?assertEqual(
+            {ok, {callresult, CallResult}},
+            ocpp_rpc:decode('2.0.1', Encoded, [{expected, <<"BootNotification">>}])
+        )
+    end}.

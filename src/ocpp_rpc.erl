@@ -1,6 +1,7 @@
 -module(ocpp_rpc).
 
 -export([decode/3, encode/1]).
+-export([call/2, callresult/2]).
 -export([id/1, error_type/1, error_code/1, error_description/1]).
 -export([payload/1]).
 
@@ -375,14 +376,30 @@ encode(#call{id = ID, action = Action, payload = Payload}) ->
     iolist_to_binary(
         json:encode(
             [2, ID, Action, Payload],
-            fun
-                (Term, _Encoder) when is_tuple(Term) ->
-                    ocpp_message:encode(Term);
-                (Term, Encoder) ->
-                    json:encode_value(Term, Encoder)
-            end
+            fun encoder/2
         )
-    ).
+    );
+encode(#callresult{id = ID, payload = Payload}) ->
+    iolist_to_binary(json:encode([3, ID, Payload], fun encoder/2)).
+
+encoder(Term, _Encoder) when is_tuple(Term) ->
+    ocpp_message:encode(Term);
+encoder(Term, Encoder) ->
+    json:encode_value(Term, Encoder).
+
+-doc """
+Construct a CALL RPC message.
+""".
+-spec call(Message :: ocpp_message:message(), ID :: binary()) -> call().
+call(Message, ID) ->
+    #call{payload = Message, id = ID, action = ocpp_message:action(Message)}.
+
+-doc """
+Construct a CALLRESULT RPC message.
+""".
+-spec callresult(Message :: ocpp_message:message(), ID :: binary()) -> callresult().
+callresult(Message, ID) ->
+    #callresult{id = ID, payload = Message}.
 
 error_type(#callerror{}) ->
     callerror;
