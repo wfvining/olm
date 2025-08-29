@@ -4,7 +4,7 @@ Terms represnting OCPP messages. This module provides a thing wrapper
 around version-specific modules.
 """.
 
--export([version/1, module/1, encode/1, decode/4, type/1]).
+-export([version/1, module/1, encode/1, decode/4, type/1, get/2]).
 
 -export_type([message/0, raw_message/0]).
 
@@ -74,3 +74,10 @@ decode('2.1', PayloadType, Direction, Payload) ->
     | ocpp_message_2_1:payload_type().
 type({_Version, Type, _}) ->
     Type.
+
+-doc """
+Get the value of a message property.
+""".
+-spec get(Key :: atom() | binary(), Message :: ocpp_message:message()) -> term().
+get(Key, {_Version, _Type, Message}) ->
+    maps:get(Key, Message).

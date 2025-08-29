@@ -14,7 +14,8 @@ process.
 
 -behavior(gen_statem).
 
--export([start_link/1, start_link/2, stop/1, connect/2]).
+-export([start_link/1, start_link/2, stop/1]).
+-export([connect/2, rpc/2, reply/3]).
 -export([init/1, callback_mode/0]).
 %% State callbacks
 -export([
@@ -35,7 +36,10 @@ process.
 -record(state, {
     stationid :: binary(),
     connection ::
-        {pending, gen_statem:from(), pid()} | {ocpp:version(), pid(), reference()} | undefined
+        {pending, gen_statem:from(), pid()} | {ocpp:version(), pid(), reference()} | undefined,
+    pending_call :: {ocpp_rpc:messageid(), binary()} | undefined,
+    rpc_from :: undefined | gen_statem:from(),
+    rpc_call :: undefined | {ocpp_handler:rpc_handle(), ocpp_rpc:call()}
 }).
 
 start_link(StationID, Options) ->
@@ -80,6 +84,27 @@ Stop the station.
 stop(StationID) ->
     gen_statem:stop(?registry(StationID)).
 
+-doc """
+Send an undecoded RPC request to the station for processing.
+""".
+rpc(StationID, RPCBinary) ->
+    gen_statem:call(?registry(StationID), {rpc, self(), RPCBinary}).
+
+-doc """
+Send a CALLRESULT RPC message to the station.
+
+If the message cannot be sent and `{error, Reason}` tuple is returned.
+This will happen if the station is not in a state that permits the
+message to be sent. For example, if the station has disconnected or if
+the response is no longer relevant due to a subsequent CALL message
+from the station.
+""".
+-spec reply(binary(), binary(), ocpp_message:message()) ->
+    ok | {error, disconnected | call_dropped}.
+reply(StationID, MessageID, Payload) ->
+    RPC = ocpp_rpc:callresult(Payload, MessageID),
+    gen_statem:call(?registry(StationID), {send, {callresult, RPC}}).
+
 callback_mode() ->
     state_functions.
 
@@ -110,7 +135,9 @@ unprovisioned({call, From}, {connect, Pid, Versions}, State) ->
                 [State#state.stationid, Reason, Pid]
             ),
             {keep_state_and_data, [{reply, From, {error, Reason}}]}
-    end.
+    end;
+unprovisioned({call, From}, {rpc, _, _}, _State) ->
+    {keep_state_and_data, [{reply, From, {error, not_connected}}]}.
 
 connected(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info(
@@ -119,11 +146,101 @@ connected(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid
     ),
     {next_state, unprovisioned, State#state{connection = undefined}};
 connected({call, From}, {connect, _, _}, _State) ->
-    {keep_state_and_data, [{reply, From, {error, already_connected}}]}.
+    {keep_state_and_data, [{reply, From, {error, already_connected}}]};
+connected(
+    {call, From},
+    {rpc, Pid, RPCBinary},
+    State
+) ->
+    handle_rpc(RPCBinary, Pid, From, State);
+connected(internal, {call, RPCCall}, #state{rpc_call = undefined} = State) ->
+    Payload = ocpp_rpc:payload(RPCCall),
+    case ocpp_message:type(Payload) of
+        'BootNotificationRequest' ->
+            ocpp_handler:rpc_call(
+                State#state.stationid, ocpp_message:type(Payload), ocpp_rpc:id(RPCCall), Payload
+            ),
+            {next_state, provisioning, State#state{rpc_from = undefined, rpc_call = RPCCall}, [
+                {reply, State#state.rpc_from, ok}
+            ]};
+        MessageType ->
+            logger:warning(
+                "~p got unexpected ~p message before provisioning (MessageID = ~p)",
+                [State#state.stationid, MessageType, ocpp_rpc:id(RPCCall)]
+            ),
+            {keep_state, State#state{rpc_from = undefined}, [
+                {reply, State#state.rpc_from, {error, not_provisioned}}
+            ]}
+    end.
 
-provisioning(_, _, _) ->
-    todo.
+provisioning({call, From}, {rpc, Pid, RPCBinary}, State) ->
+    handle_rpc(RPCBinary, Pid, From, State);
+provisioning(internal, {call, RPCCall}, #state{rpc_call = PendingCall} = State) ->
+    Payload = ocpp_rpc:payload(RPCCall),
+    case ocpp_message:type(Payload) of
+        'BootNotificationRequest' ->
+            logger:warning(
+                "Received new BootNotification~nID: ~p~n~p~n "
+                "while processing a BootNotificaion~nID: ~p~n~p~n"
+                "pending request dropped",
+                [
+                    ocpp_rpc:id(RPCCall),
+                    Payload,
+                    ocpp_rpc:id(PendingCall),
+                    ocpp_rpc:payload(PendingCall)
+                ]
+            ),
+            ocpp_handler:rpc_call(
+                State#state.stationid, ocpp_rpc:id(RPCCall), ocpp_message:type(Payload), Payload
+            ),
+            {next_state, provisioning, State#state{rpc_from = undefined, rpc_call = RPCCall}, [
+                {reply, State#state.rpc_from, ok}
+            ]};
+        MessageType ->
+            logger:warning(
+                "~p got unexpected ~p message before provisioning (MessageID = ~p)",
+                [State#state.stationid, MessageType, ocpp_rpc:id(RPCCall)]
+            ),
+            {keep_state, State#state{rpc_from = undefined}, [
+                {reply, State#state.rpc_from, {error, not_provisioned}}
+            ]}
+    end;
+provisioning({call, From}, {send, {callresult, RPC}}, #state{rpc_call = PendingCall} = State) ->
+    case {ocpp_rpc:id(RPC), ocpp_rpc:id(PendingCall)} of
+        {SendID, PendingID} when SendID =:= PendingID ->
+            send_response(State#state.connection, RPC),
+            Payload = ocpp_rpc:payload(RPC),
+            try ocpp_message:get(status, Payload) of
+                'Accepted' ->
+                    {next_state, accepted, State#state{rpc_call = undefined}, [{reply, From, ok}]};
+                'Rejected' ->
+                    {next_state, connected, State#state{rpc_call = undefined}, [{reply, From, ok}]};
+                'Pending' ->
+                    {next_state, boot_pending, State#state{rpc_call = undefined}, [
+                        {reply, From, ok}
+                    ]}
+            catch
+                error:{badkey, _} ->
+                    logger:warning(
+                        "response is not a valid BootNotificationResponse~nID:~p~n~p",
+                        [SendID, Payload]
+                    ),
+                    {keep_state_and_data, [{reply, From, {error, bad_message}}]}
+            end;
+        {SendID, PendingID} when SendID =/= PendingID ->
+            logger:warning(
+                "Got response for message ~p, but ~p is pending~nresponse dropped.",
+                [SendID, PendingID]
+            ),
+            {keep_state_and_data, [{reply, From, {error, call_dropped}}]}
+    end;
+provisioning(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
+    logger:info("Connection process ~p down before BootNotificationResponse sent~n~p", [Pid, Reason]),
+    {next_state, unprovisioned, State#state{connection = undefined, rpc_call = undefined}}.
 
+boot_pending(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
+    logger:info("Connection process ~p down while boot Pending~n~p", [Pid, Reason]),
+    {next_state, unprovisioned, State#state{connection = undefined, rpc_call = undefined}};
 boot_pending(_, _, _) ->
     todo.
 
@@ -141,3 +258,34 @@ offline(_, _, _) ->
 
 reconnecting(_, _, _) ->
     todo.
+
+handle_rpc(
+    RPCBinary, Pid, From, #state{connection = {Version, Pid, _}, pending_call = PendingCall} = State
+) ->
+    Opts =
+        case PendingCall of
+            undefined -> [];
+            {MessageID, Action} -> [{expected, {MessageID, Action}}]
+        end,
+    case ocpp_rpc:decode(Version, RPCBinary, Opts) of
+        {ok, RPC} ->
+            {keep_state, State#state{rpc_from = From}, [{next_event, internal, RPC}]};
+        {error, Reason} ->
+            logger:warning("RPC decode failed: ~p. Message = ~p", [Reason, RPCBinary]),
+            {keep_state_and_data, [{reply, From, Reason}]}
+    end;
+handle_rpc(_, Pid, From, #state{connection = {_, ConnPid, _}}) when Pid =/= ConnPid ->
+    logger:warning(
+        "Got unexpected RPC from ~p which is not the connected process (~p). Message dropped.",
+        [Pid, ConnPid]
+    ),
+    {keep_state_and_data, [{reply, From, {error, not_connected}}]};
+handle_rpc(_, Pid, From, #state{connection = undefined}) ->
+    logger:warning(
+        "Got unexpected RPC from ~p but station is not connected. Message dropped.",
+        [Pid]
+    ),
+    {keep_state_and_data, [{reply, From, {error, not_connected}}]}.
+
+send_response({_, Conn, _}, RPC) ->
+    Conn ! {ocpp, {rpcsend, ocpp_rpc:encode(RPC)}}.
