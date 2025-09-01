@@ -1,11 +1,14 @@
 -module(ocpp_handler).
 
--export([start_link/1, connect/3]).
+-export([start_link/1, connect/3, rpc_call/4]).
 
 -define(registry(Name), {via, gproc, ?name(Name)}).
 -define(name(Name), {n, l, {ocpp_station, Name, handler}}).
 
 -callback connect(Versions :: [ocpp:version()]) -> {ok, ocpp:version()} | {error, not_supported}.
+
+rpc_call(StationID, MessageType, MessageID, Message) ->
+    gen_event:notify(?registry(StationID), {rpc_call, MessageType, MessageID, Message}).
 
 connect(StationID, Handler, Versions) ->
     gen_event:call(?registry(StationID), Handler, {connect, Versions}).
