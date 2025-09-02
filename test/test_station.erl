@@ -1297,15 +1297,6 @@ rpc_before_connect(StationID) ->
 %%    `connected` and reconnected statest since boot_pending has special requirements
 %%    with respect to configuration messages.
 
-%% 5. The CSMS SHALL NOT send any messages other than
-%%    - SetVariablesRequest
-%%    - GetVariablesRequest
-%%    - TriggerMessageRequest
-%%    - GetReportRequest
-%%    NOTE In 2.0.1 the network profile cannot be updated in Pending state; however, in
-%%    2.1 it is exposed by the device model and can be configured via a
-%%    SetVariablesRequest (if supported by the charging station).
-
 %% 6. If the station rejects the TriggerMessageRequest, then the requested message
 %%    should still be disallowed. If no response arrives and the requested message is
 %%    received the message should NOT be considered a triggered message.
