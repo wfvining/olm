@@ -843,6 +843,105 @@ boot_pending_trigger_message_test_() ->
                     )}
             )}}.
 
+pending_triggered_rejected_test_() ->
+    StationID = atom_to_binary(?FUNCTION_NAME),
+    {setup, fun setup_deps/0, fun teardown_deps/1,
+        ?mockStationManager(
+            ?withStation(
+                StationID,
+                [pending_triggered_rejected(StationID)]
+            )
+        )}.
+
+pending_triggered_rejected(StationID) ->
+    {setup, local, fun() -> boot_to_pending(StationID) end,
+        {"A triggered message that was rejected should be dissallowed from a station in the pending state",
+            fun() ->
+                MsgID = integer_to_binary(erlang:unique_integer()),
+                TriggerMessageRequest = ocpp_message_2_0_1:trigger_message_request(
+                    #{requestedMessage => 'Heartbeat'}
+                ),
+                ok = ocpp_station:call(StationID, MsgID, TriggerMessageRequest),
+                {ok, {call, TriggerCall}} = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), []),
+                ?assertEqual(TriggerMessageRequest, ocpp_rpc:payload(TriggerCall)),
+                TriggerMessageResponse = ocpp_message_2_0_1:trigger_message_response(
+                    #{status => 'Rejected'}
+                ),
+                ok = ocpp_station:rpc(
+                    StationID, ocpp_rpc:encode(ocpp_rpc:callresult(TriggerMessageResponse, MsgID))
+                ),
+                HBID = integer_to_binary(erlang:unique_integer()),
+                HeartbeatRequest = ocpp_message_2_0_1:heartbeat_request(#{}),
+                ocpp_station:rpc(StationID, ocpp_rpc:encode(ocpp_rpc:call(HeartbeatRequest, HBID))),
+                HBResult = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), [
+                    {expected, <<"Heartbeat">>}
+                ]),
+                ?assertMatch({ok, {callerror, _}}, HBResult),
+                {ok, {callerror, CallError}} = HBResult,
+                ?assertEqual('SecurityError', ocpp_rpc:error_code(CallError)),
+                ?assertEqual(
+                    <<"Disallowed or unsolicited CALL while boot pending">>,
+                    ocpp_rpc:error_description(CallError)
+                ),
+                ?assertMatch(#{<<"action">> := <<"Heartbeat">>}, ocpp_rpc:error_details(CallError))
+            end}}.
+
+pending_triggered_duplicate_test_() ->
+    StationID = atom_to_binary(?FUNCTION_NAME),
+    {setup, fun setup_deps/0, fun teardown_deps/1,
+        ?mockStationManager(
+            ?withStation(
+                StationID,
+                [pending_triggered_duplicate(StationID)]
+            )
+        )}.
+
+pending_triggered_duplicate(StationID) ->
+    {setup, local, fun() -> boot_to_pending(StationID) end,
+        {"A triggered message that was accepted should be allowed only once a station in the pending state",
+            fun() ->
+                MsgID = integer_to_binary(erlang:unique_integer()),
+                TriggerMessageRequest = ocpp_message_2_0_1:trigger_message_request(
+                    #{requestedMessage => 'Heartbeat'}
+                ),
+                ok = ocpp_station:call(StationID, MsgID, TriggerMessageRequest),
+                {ok, {call, TriggerCall}} = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), []),
+                ?assertEqual(TriggerMessageRequest, ocpp_rpc:payload(TriggerCall)),
+                TriggerMessageResponse = ocpp_message_2_0_1:trigger_message_response(
+                    #{status => 'Accepted'}
+                ),
+                ok = ocpp_station:rpc(
+                    StationID, ocpp_rpc:encode(ocpp_rpc:callresult(TriggerMessageResponse, MsgID))
+                ),
+                HBID = integer_to_binary(erlang:unique_integer()),
+                HeartbeatRequest = ocpp_message_2_0_1:heartbeat_request(#{}),
+                ocpp_station:rpc(StationID, ocpp_rpc:encode(ocpp_rpc:call(HeartbeatRequest, HBID))),
+                HeartbeatResponse = ocpp_message_2_0_1:heartbeat_response(#{
+                    currentTime => {{2025, 1, 1}, {0, 0, 0}}
+                }),
+                ok = ocpp_station:reply(StationID, HBID, HeartbeatResponse),
+                HBResult = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), [
+                    {expected, <<"Heartbeat">>}
+                ]),
+                CallResult = ocpp_rpc:callresult(HeartbeatResponse, HBID),
+                ?assertEqual({ok, {callresult, CallResult}}, HBResult),
+                HBID1 = integer_to_binary(erlang:unique_integer()),
+                ocpp_station:rpc(
+                    StationID, ocpp_rpc:encode(ocpp_rpc:call(HeartbeatRequest, HBID1))
+                ),
+                HBResult1 = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), [
+                    {expected, <<"Heartbeat">>}
+                ]),
+                ?assertMatch({ok, {callerror, _}}, HBResult1),
+                {ok, {callerror, CallError}} = HBResult1,
+                ?assertEqual('SecurityError', ocpp_rpc:error_code(CallError)),
+                ?assertEqual(
+                    <<"Disallowed or unsolicited CALL while boot pending">>,
+                    ocpp_rpc:error_description(CallError)
+                ),
+                ?assertMatch(#{<<"action">> := <<"Heartbeat">>}, ocpp_rpc:error_details(CallError))
+            end}}.
+
 pending_untriggered_boot_notification_test_() ->
     {"station in pending state sends a BootNotificationRequest without being triggered",
         {setup, fun setup_deps/0, fun teardown_deps/1,
