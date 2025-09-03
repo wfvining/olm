@@ -1269,6 +1269,59 @@ rpc_before_connect(StationID) ->
         ?assertEqual({error, not_connected}, Result)
     end}.
 
+boot_rejected_test_() ->
+    {setup, fun setup_deps/0, fun teardown_deps/1,
+        ?mockStationManager(
+            ?withStationX(
+                [call_rejected_station()]
+            )
+        )}.
+
+call_rejected_station() ->
+    StationID = atom_to_binary(?FUNCTION_NAME),
+    {StationID, fun(_, _) ->
+        {"The CSMS SHALL NOT initiate any message to a station it has rejected", fun() ->
+            {ok, '2.0.1'} = ocpp_station:connect(StationID, ['2.0.1']),
+            BootNotificationRequest = ocpp_rpc:encode(
+                ocpp_rpc:call(
+                    ocpp_message_2_0_1:boot_notification_request(#{
+                        reason => 'PowerUp',
+                        chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
+                    }),
+                    <<"RejectMe">>
+                )
+            ),
+            ok = ocpp_station:rpc(StationID, BootNotificationRequest),
+            Response = ocpp_message_2_0_1:boot_notification_response(
+                #{
+                    status => 'Rejected',
+                    currentTime => {{2025, 1, 1}, {12, 3, 4}},
+                    interval => 0
+                }
+            ),
+            ok = ocpp_station:reply(StationID, <<"RejectMe">>, Response),
+            BootNotificationResponse = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), [
+                {expected, <<"BootNotification">>}
+            ]),
+            ?assertEqual(
+                {ok, {callresult, ocpp_rpc:callresult(Response, <<"RejectMe">>)}},
+                BootNotificationResponse
+            ),
+            %% station remains connected, but is compliant and does not send messages
+            AttemptedMsg = ocpp_message_2_0_1:get_base_report_request(
+                #{
+                    requestId => 1,
+                    reportBase => 'FullInventory'
+                }
+            ),
+            ?assertEqual(
+                {error, not_provisioned},
+                ocpp_station:call(StationID, <<"IllegalCall">>, AttemptedMsg)
+            ),
+            ?assertError(timeout, ocpp_client_recv(100))
+        end}
+    end}.
+
 %% TODO Things to test:
 
 %% 1. for all states after receiving a BootNotificationRequest that is not (yet)
@@ -1291,11 +1344,9 @@ rpc_before_connect(StationID) ->
 %%        previous BootNotificationResponse) SHALL result in a CALLERROR: SecurityError
 %%        (Requirement B01.FR.10, B02.FR.09, & B03.FR.07)
 
-%% 4. The CSMS (ocpp_station state machine) SHALL NOT send any messages unless it has
-%%    first sent a BootNotificationResponse with status Accepted, not withstanding [5]
-%%    (B03.FR.08). This item mainly applies to attempts to send messages from the
-%%    `connected` and reconnected statest since boot_pending has special requirements
-%%    with respect to configuration messages.
+%% 4. [x] The CSMS SHALL NOT send any messages to a station it has rejected. I think
+%%        this generalizes to sending any message to the station before a
+%%        BootNotificationResponse has been sent with status Accepted or Pending
 
 %% 6. If the station rejects the TriggerMessageRequest, then the requested message
 %%    should still be disallowed. If no response arrives and the requested message is

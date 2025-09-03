@@ -200,7 +200,9 @@ connected(
                 [State#state.stationid, RPCBinary, Reason]
             ),
             {keep_state_and_data, [{reply, From, {error, Reason}}]}
-    end.
+    end;
+connected({call, From}, {send, _}, _) ->
+    {keep_state_and_data, [{reply, From, {error, not_provisioned}}]}.
 
 provisioning({call, From}, {rpc, Pid, RPCBinary}, State = #state{rpc_call = PendingCall}) ->
     case decode_rpc(RPCBinary, Pid, State) of
