@@ -187,3 +187,64 @@ type_error_test_() ->
                 end
             )}
     ].
+
+refs_test_() ->
+    [
+        {"a reference to an undefined spec causes a `badref` error",
+            ?_test(
+                begin
+                    Obj = #{foo => 10},
+                    Spec = #{properties => #{foo => {ref, bar}}},
+                    ?assertError({badref, bar}, cmap2:new(Obj, Spec))
+                end
+            )},
+        {"an undefined reference in another referenced spec causes a `badref` error",
+            ?_test(
+                begin
+                    Obj = #{foo => 10},
+                    Spec = #{properties => #{foo => {ref, bar}}, defs => #{bar => {ref, baz}}},
+                    ?assertError({badref, baz}, cmap2:new(Obj, Spec))
+                end
+            )},
+        {"circular references are detected and cause an error describing the cycle",
+            ?_test(
+                begin
+                    Obj = #{foo => 10},
+                    Spec = #{
+                        properties => #{foo => {ref, bar}},
+                        defs => #{bar => {ref, foo}, foo => {ref, bar}}
+                    },
+                    ?assertError({circularref, [bar, foo]}, cmap2:new(Obj, Spec))
+                end
+            )},
+        {"singleton circular references are detected and cause an error describing the cycle",
+            ?_test(
+                begin
+                    Obj = #{foo => 10},
+                    Spec = #{
+                        properties => #{foo => {ref, bar}},
+                        defs => #{bar => {ref, bar}}
+                    },
+                    ?assertError({circularref, [bar]}, cmap2:new(Obj, Spec))
+                end
+            )},
+        {"references resolve to the root spec",
+            ?_test(
+                begin
+                    Obj = #{foo => #{bar => #{baz => ~B"biz"}}},
+                    Spec = #{
+                        properties => #{foo => {ref, foo}},
+                        defs => #{
+                            foo =>
+                                {object, #{
+                                    properties => #{bar => {ref, bar}},
+                                    defs => #{bar => {integer, #{}}}
+                                }},
+                            bar => {ref, baz},
+                            baz => {object, #{properties => #{baz => {enum, [biz]}}}}
+                        }
+                    },
+                    ?assertEqual({ok, #{foo => #{bar => #{baz => biz}}}}, cmap2:new(Obj, Spec))
+                end
+            )}
+    ].

@@ -3,10 +3,15 @@
 
 -export([new/2]).
 
+-export_type([mapspec/0]).
+
 -type mapspec() :: #{
-    required => [atom()], properties := [{atom(), itemspec()}], extra_keys => boolean()
+    required => [atom()],
+    properties := #{atom() => itemspec()},
+    additional_properties => boolean(),
+    defs => #{atom() => itemspec()}
 }.
--type itemspec() :: primitivespec() | {cmap, mapspec()}.
+-type itemspec() :: primitivespec() | {object, mapspec()} | {array, arrayspec()} | {ref, atom()}.
 -type primitivespec() ::
     boolean
     | datetime
@@ -17,82 +22,30 @@
     | {enum, [atom()]}.
 -type numberspec(T) :: #{min => T, max => T}.
 -type stringspec() :: #{max_length => non_neg_integer()}.
+-type arrayspec() :: #{
+    items := itemspec(), min_items => non_neg_integer(), max_items => non_neg_integer()
+}.
 
-%% new(Map, Spec) ->
-%%     try
-%%         Res = #{K => build_value(K, V, Spec) || K := V <- Map},
-%%         Missing = maps:get(required, Spec, []) -- maps:keys(Res),
-%%         if
-%%             Missing == [] ->
-%%                 {ok, Res};
-%%             true ->
-%%                 {error, {property_error, {missing_properties, Missing}}}
-%%         end
-%%     catch
-%%         throw:Error ->
-%%             {error, Error}
-%%     end.
-
+%% TODO this spec is over-broad in its return type
+-spec new(#{atom() | binary() => term()}, mapspec()) -> #{atom() | binary() => term()}.
 new(Map, Spec) when is_map(Map), is_map(Spec) ->
-    build_value(Map, {object, Spec});
+    build_value(Map, {object, Spec}, maps:get(defs, Spec, #{}));
 new(_, _) ->
     error(badarg).
 
-%% build_value(Key, Value, #{properties := Properties} = Spec) ->
-%%     ExtraKeys = maps:get(extra_keys, Spec, false),
-%%     case maps:get(Key, Properties, undefined) of
-%%         undefined when ExtraKeys, not is_map_key(Key, Properties) ->
-%%             Value;
-%%         undefined when not ExtraKeys, not is_map_key(Key, Properties) ->
-%%             throw({property_error, {illegal_property, Key}});
-%%         ValueSpec ->
-%%             case build_value(Value, ValueSpec) of
-%%                 {error, {Reason, Loc}} when Reason =/= property_error ->
-%%                     throw(
-%%                         {Reason, #{
-%%                             key => [Key | Loc],
-%%                             value => get_value(Loc, Value),
-%%                             spec => get_spec(Loc, ValueSpec)
-%%                         }}
-%%                     );
-%%                 {error, Reason} ->
-%%                     throw({Reason, #{key => Key, value => Value, spec => ValueSpec}});
-%%                 {ok, ParsedValue} ->
-%%                     ParsedValue
-%%             end
-%%     end.
-
-get_value([P], Obj) when is_atom(P) ->
-    maps:get(P, Obj);
-get_value([P | Rest], Obj) when is_atom(P) ->
-    get_value(Rest, maps:get(P, Obj));
-get_value([{element, N}], Arr) ->
-    lists:nth(N, Arr);
-get_value([{element, N} | Rest], Arr) ->
-    get_value(Rest, lists:nth(N, Arr)).
-
-get_spec([P], {object, #{properties := Properties}}) when is_atom(P) ->
-    maps:get(P, Properties);
-get_spec([P | Rest], {object, #{properties := Properties}}) when is_atom(P) ->
-    get_spec(Rest, maps:get(P, Properties));
-get_spec([{element, _}], {array, #{items := ItemSpec}}) ->
-    ItemSpec;
-get_spec([{element, _} | Rest], {array, #{items := ItemSpec}}) ->
-    get_spec(Rest, ItemSpec).
-
-build_value(Bool, boolean) when is_boolean(Bool) ->
+build_value(Bool, boolean, _) when is_boolean(Bool) ->
     {ok, Bool};
-build_value(_, boolean) ->
+build_value(_, boolean, _) ->
     {error, type_error};
-build_value(X, {integer, _}) when not is_integer(X) ->
+build_value(X, {integer, _}, _) when not is_integer(X) ->
     {error, type_error};
-build_value(X, {float, _}) when not is_float(X) ->
+build_value(X, {float, _}, _) when not is_float(X) ->
     {error, type_error};
-build_value(X, {number, _}) when not is_number(X) ->
+build_value(X, {number, _}, _) when not is_number(X) ->
     {error, type_error};
-build_value(X, {string, _}) when not is_binary(X) ->
+build_value(X, {string, _}, _) when not is_binary(X) ->
     {error, type_error};
-build_value(X, {string, Constraints}) when is_binary(X) ->
+build_value(X, {string, Constraints}, _) when is_binary(X) ->
     MaxLen = maps:get(max_length, Constraints, inf),
     case unicode:characters_to_binary(X, utf8) of
         {_, _, _} ->
@@ -106,9 +59,9 @@ build_value(X, {string, Constraints}) when is_binary(X) ->
                     {error, value_error}
             end
     end;
-build_value(X, {enum, _}) when not is_atom(X), not is_binary(X) ->
+build_value(X, {enum, _}, _) when not is_atom(X), not is_binary(X) ->
     {error, type_error};
-build_value(X, {Type, Constraints}) when
+build_value(X, {Type, Constraints}, _) when
     Type =:= integer, is_integer(X);
     Type =:= float, is_float(X);
     Type =:= number, is_number(X)
@@ -127,46 +80,46 @@ build_value(X, {Type, Constraints}) when
         _ ->
             {error, value_error}
     end;
-build_value(X, {enum, Values}) when is_binary(X) ->
+build_value(X, {enum, Values}, Defs) when is_binary(X) ->
     try
-        build_value(binary_to_existing_atom(X, utf8), {enum, Values})
+        build_value(binary_to_existing_atom(X, utf8), {enum, Values}, Defs)
     catch
         error:badarg ->
             {error, value_error}
     end;
-build_value(X, {enum, Values}) when is_atom(X) ->
+build_value(X, {enum, Values}, _) when is_atom(X) ->
     case lists:member(X, Values) of
         true ->
             {ok, X};
         false ->
             {error, value_error}
     end;
-build_value(X, datetime) when is_binary(X) ->
+build_value(X, datetime, _) when is_binary(X) ->
     try
         {ok, datetime:from_rfc3339(X)}
     catch
         error:_ ->
             {error, type_error}
     end;
-build_value({{_, _, _}, {_, _, _}} = DT, datetime) ->
+build_value({{_, _, _}, {_, _, _}} = DT, datetime, _) ->
     try
         {ok, datetime:from_local_time(DT)}
     catch
         error:_ ->
             {error, value_error}
     end;
-build_value(X, datetime) ->
+build_value(X, datetime, _) ->
     case datetime:is_datetime(X) of
         true ->
             {ok, X};
         false ->
             {error, type_error}
     end;
-build_value(Xs, {array, #{items := ItemConstraint} = Constraints}) when is_list(Xs) ->
+build_value(Xs, {array, #{items := ItemConstraint} = Constraints}, Defs) when is_list(Xs) ->
     try
         {Vals, _} = lists:mapfoldl(
             fun(X, N) ->
-                case build_value(X, ItemConstraint) of
+                case build_value(X, ItemConstraint, Defs) of
                     {ok, Val} ->
                         {Val, N + 1};
                     {error, Reason} ->
@@ -189,15 +142,15 @@ build_value(Xs, {array, #{items := ItemConstraint} = Constraints}) when is_list(
         throw:{error, Reason} ->
             {error, Reason}
     end;
-build_value(_, {array, Constraints}) ->
+build_value(_, {array, _}, _) ->
     {error, type_error};
-build_value(X, {object, #{properties := Properties} = Constraints}) when is_map(X) ->
+build_value(X, {object, #{properties := Properties} = Constraints}, Defs) when is_map(X) ->
     try
         Result = maps:fold(
             fun
                 F(K, V, Acc) when is_map_key(K, Properties) ->
                     Spec = maps:get(K, Properties),
-                    case build_value(V, Spec) of
+                    case build_value(V, Spec, Defs) of
                         {ok, Val} -> Acc#{K => Val};
                         {error, Reason} -> throw({property_error, K, Reason})
                     end;
@@ -250,8 +203,28 @@ build_value(X, {object, #{properties := Properties} = Constraints}) when is_map(
                     )
                 )}
     end;
-build_value(X, {object, _}) when not is_map(X) ->
-    {error, type_error}.
+build_value(X, {object, _}, _) when not is_map(X) ->
+    {error, type_error};
+build_value(X, {ref, Ref}, Defs) ->
+    Spec = resolve_ref(Ref, Defs),
+    build_value(X, Spec, Defs).
+
+resolve_ref(Ref, Defs) when is_map_key(Ref, Defs) ->
+    resolve_ref(maps:get(Ref, Defs), Defs, [Ref]);
+resolve_ref(Ref, _) ->
+    error({badref, Ref}).
+
+resolve_ref({ref, Ref}, Defs, Path) when is_map_key(Ref, Defs) ->
+    case lists:member(Ref, Path) of
+        true ->
+            error({circularref, lists:reverse(Path)});
+        false ->
+            resolve_ref(maps:get(Ref, Defs), Defs, [Ref | Path])
+    end;
+resolve_ref({ref, Ref}, _, _) ->
+    error({badref, Ref});
+resolve_ref(Spec, _, _) ->
+    Spec.
 
 maybe_to_atom(K) when is_atom(K) ->
     K;
