@@ -29,11 +29,16 @@ to_rfc3339(#datetime{gregorianseconds = GregorianSeconds, milliseconds = Millis}
     Milliseconds = GregorianSeconds * 1000 + Millis,
     Epoch = calendar:datetime_to_gregorian_seconds({{1970, 1, 1}, {0, 0, 0}}) * 1000,
     SystemTimeUTC = Milliseconds - Epoch,
-    unicode:characters_to_binary(
+    case
         calendar:system_time_to_rfc3339(
             SystemTimeUTC, [{unit, millisecond}, {offset, "Z"}]
         )
-    ).
+    of
+        RFC3339 when is_list(RFC3339) ->
+            unicode:characters_to_binary(RFC3339);
+        _ ->
+            error(invalid_datetime)
+    end.
 
 -spec from_local_time(calendar:datetime()) -> datetime().
 from_local_time(DateTime) ->
