@@ -1,100 +1,124 @@
 -module(ocpp_message).
--moduledoc """
-Terms represnting OCPP messages. This module provides a thing wrapper
-around version-specific modules.
-""".
 
--export([version/1, module/1, encode/1, decode/4, type/1, action/1, get/2, get/3]).
+-export([decode/3, new/3, encode/1, action/1, type/1, get/2, get/3, unload/1]).
 
--export_type([message/0, raw_message/0]).
+-export_type([message/0]).
 
--opaque raw_message() ::
-    {raw_message, string(), request | response, #{binary() => json:decode_value()}}.
--type message() ::
-    ocpp_message_1_6:message()
-    | ocpp_message_2_0_1:message()
-    | ocpp_message_2_1:message().
+-record(ocppmessage, {version :: ocpp:version(), payloadtype :: binary(), payload :: map()}).
 
--define(MODULES, #{
-    '1.6' => ocpp_message_1_6,
-    '2.0.1' => ocpp_message_2_0_1,
-    '2.1' => ocpp_message_2_1
-}).
-
--define(VERSIONS, #{
-    ocpp_message_1_6 => '1.6',
-    ocpp_message_2_0_1 => '2.0.1',
-    ocpp_message_2_1 => '2.1'
-}).
+-opaque message() :: #ocppmessage{}.
 
 -doc """
-Return the OCPP version used to create a message.
+Decode a map from a `json:decode_value()` to an OCPP message
+representation.
 """.
--spec version(message()) -> ocpp:version().
-version({MsgModule, _, _}) ->
-    maps:get(MsgModule, ?VERSIONS).
+-spec decode(ocpp:version(), binary(), json:decode_value()) ->
+    {ok, message()} | {error, Reason :: term()}.
+decode(Version, MessageType, Payload) when is_map(Payload) ->
+    Schema = lookup_schema(Version, MessageType),
+    case cmap:new(Payload, Schema) of
+        {ok, Message} ->
+            {ok, #ocppmessage{version = Version, payloadtype = MessageType, payload = Message}};
+        {error, _} = Error ->
+            Error
+    end.
+
+new(Version, MessageType, Payload) ->
+    decode(Version, MessageType, Payload).
 
 -doc """
-Return the module for a specific OCPP version.
-""".
--spec module(ocpp:version()) -> module().
-module(Version) ->
-    maps:get(Version, ?MODULES).
-
--doc """
-Encode a message payload as JSON.
+Encode a message as a JSON binary.
 """.
 -spec encode(message()) -> binary().
-encode({_, _, Payload}) ->
-    iolist_to_binary(cmap:to_json(Payload)).
-
--doc """
-Decode a message payload.
-""".
--spec decode(
-    Version :: ocpp:version(),
-    PayloadType :: binary(),
-    Direction :: request | response,
-    Payload :: json:decode_value()
-) ->
-    {ok, message()}
-    | {error, Reason :: term()}.
-%% decode(_, _, _, Payload) when not is_map(Payload) ->
-%%     {error, bad_payload};
-decode('1.6', PayloadType, Direction, Payload) ->
-    ocpp_message_1_6:decode(PayloadType, Direction, Payload);
-decode('2.0.1', PayloadType, Direction, Payload) ->
-    ocpp_message_2_0_1:decode(PayloadType, Direction, Payload);
-decode('2.1', PayloadType, Direction, Payload) ->
-    ocpp_message_2_1:decode(PayloadType, Direction, Payload).
-
--spec type(message()) ->
-    ocpp_message_1_6:payload_type()
-    | ocpp_message_2_0_1:payload_type()
-    | ocpp_message_2_1:payload_type().
-type({_Version, Type, _}) ->
-    Type.
+encode(#ocppmessage{payload = Message}) ->
+    iolist_to_binary(cmap:to_json(Message)).
 
 -doc """
 Return the action name for the message (i.e. the message type without
 the 'Request' or 'Response' suffix, if the suffix exists).
 """.
 -spec action(message()) -> binary().
-action({_Version, Type, _}) ->
-    TypeStr = atom_to_binary(Type),
-    case re:run(TypeStr, ~S"^(?<action>.*)(?:Request|Response)$", [{capture, [action], binary}]) of
+action(#ocppmessage{payloadtype = Type}) ->
+    case re:run(Type, ~S"^(?<action>.*)(?:Request|Response)$", [{capture, [action], binary}]) of
         nomatch ->
-            TypeStr;
+            %% Must pass through non-matching types for new messages in OCPP 2.1
+            Type;
         {match, [Action]} ->
             Action
     end.
 
 -doc """
-Get the value of a message property.
+Return the message type (i.e. the action name suffixed with "Request" or "Response").
 """.
--spec get(Key :: atom() | binary(), Message :: ocpp_message:message()) -> term().
-get(Key, {_Version, _Type, Message}) ->
+-spec type(message()) -> binary().
+type(#ocppmessage{payloadtype = Type}) ->
+    Type.
+
+-doc """
+Retrieve the value associated with `Key`. If the key is not present
+the call fails with an error `{badkey, Key}`.
+""".
+-spec get(Key :: atom() | binary(), Message :: message()) -> cmap:value().
+get(Key, #ocppmessage{payload = Message}) ->
     maps:get(Key, Message).
 
-get(Key, {_Version, _Type, Message}, Default) ->
+-spec get(Key :: atom() | binary(), Message :: message(), Default) -> cmap:value() | Default.
+get(Key, #ocppmessage{payload = Message}, Default) ->
     maps:get(Key, Message, Default).
+
+-doc """
+Unload the schemas for `Version`. They will be loaded again the next
+time they are required.
+""".
+-spec unload(ocpp:version()) -> ok.
+unload(Version) ->
+    persistent_term:erase({?MODULE, Version}),
+    ok.
+
+lookup_schema(Version, SchemaName) ->
+    try persistent_term:get({?MODULE, Version}) of
+        #{SchemaName := Spec} ->
+            Spec;
+        _ ->
+            error({unknown_message, SchemaName})
+    catch
+        error:badarg ->
+            load_schemas_and_retry(Version, SchemaName)
+    end.
+
+load_schemas_and_retry(Version, SchemaName) ->
+    Priv = code:priv_dir(ocpp),
+    SpecPath = filename:join([Priv, "messages", atom_to_binary(Version), "specs"]),
+    case file:consult(SpecPath) of
+        {ok, SpecList} ->
+            Specs = load_overrides(filename:dirname(SpecPath), maps:from_list(SpecList)),
+            persistent_term:put({?MODULE, Version}, Specs),
+            lookup_schema(Version, SchemaName);
+        {error, {_, _, _} = Reason} ->
+            error({invalid_message_specs, {file:format_error(Reason), Version, SpecPath}});
+        {error, _Reason} ->
+            error({unsupported_version, Version})
+    end.
+
+load_overrides(SpecDir, Schemas) ->
+    case file:consult(filename:join([SpecDir, "overrides"])) of
+        {ok, Overrides} ->
+            apply_overrides(maps:from_list(Overrides), Schemas);
+        {error, _} ->
+            Schemas
+    end.
+
+apply_overrides(Overrides, Schemas) ->
+    #{SchemaName => do_apply_overrides(Overrides, Spec) || SchemaName := Spec <- Schemas}.
+
+merge_specs(_Name, {object, Constraints}, Overrides) ->
+    {object, maps:merge_with(fun merge_specs/3, Constraints, Overrides)};
+merge_specs(_Name, {Type, Constraints}, {Type, Overrides}) ->
+    {Type, maps:merge(Constraints, Overrides)};
+merge_specs(_Name, Val1, Val2) when is_map(Val1), is_map(Val2) ->
+    maps:merge_with(fun merge_specs/3, Val1, Val2);
+merge_specs(_Name, _, V) ->
+    V.
+
+do_apply_overrides(Overrides, #{defs := Defs} = OSpec) ->
+    OSpec#{defs => maps:merge_with(fun merge_specs/3, Defs, maps:with(maps:keys(Defs), Overrides))}.

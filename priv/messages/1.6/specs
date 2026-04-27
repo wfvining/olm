@@ -1,0 +1,672 @@
+{<<"AuthorizeRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:AuthorizeRequest">>,doc => #{},defs => #{},
+   properties => #{idTag => {string,#{max_length => 20}}},
+   required => [idTag],
+   additional_properties => false}}.
+{<<"AuthorizeResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:AuthorizeResponse">>,doc => #{},defs => #{},
+   properties =>
+       #{idTagInfo =>
+             {object,
+                 #{doc => #{},
+                   properties =>
+                       #{status =>
+                             {enum,
+                                 ['Accepted','Blocked','Expired','Invalid',
+                                  'ConcurrentTx']},
+                         expiryDate => datetime,
+                         parentIdTag => {string,#{max_length => 20}}},
+                   required => [status],
+                   additional_properties => false}}},
+   required => [idTagInfo],
+   additional_properties => false}}.
+{<<"BootNotificationRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:BootNotificationRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{chargeBoxSerialNumber => {string,#{max_length => 25}},
+         chargePointModel => {string,#{max_length => 20}},
+         chargePointSerialNumber => {string,#{max_length => 25}},
+         chargePointVendor => {string,#{max_length => 20}},
+         firmwareVersion => {string,#{max_length => 50}},
+         iccid => {string,#{max_length => 20}},
+         imsi => {string,#{max_length => 20}},
+         meterSerialNumber => {string,#{max_length => 25}},
+         meterType => {string,#{max_length => 25}}},
+   required => [chargePointVendor,chargePointModel],
+   additional_properties => false}}.
+{<<"BootNotificationResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:BootNotificationResponse">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{status => {enum,['Accepted','Pending','Rejected']},
+         currentTime => datetime,
+         interval => {integer,#{}}},
+   required => [status,currentTime,interval],
+   additional_properties => false}}.
+{<<"CancelReservationRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:CancelReservationRequest">>,doc => #{},
+   defs => #{},
+   properties => #{reservationId => {integer,#{}}},
+   required => [reservationId],
+   additional_properties => false}}.
+{<<"CancelReservationResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:CancelReservationResponse">>,doc => #{},
+   defs => #{},
+   properties => #{status => {enum,['Accepted','Rejected']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"ChangeAvailabilityRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:ChangeAvailabilityRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{type => {enum,['Inoperative','Operative']},
+         connectorId => {integer,#{}}},
+   required => [connectorId,type],
+   additional_properties => false}}.
+{<<"ChangeAvailabilityResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:ChangeAvailabilityResponse">>,doc => #{},
+   defs => #{},
+   properties => #{status => {enum,['Accepted','Rejected','Scheduled']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"ChangeConfigurationRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:ChangeConfigurationRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{value => {string,#{max_length => 500}},
+         key => {string,#{max_length => 50}}},
+   required => [key,value],
+   additional_properties => false}}.
+{<<"ChangeConfigurationResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:ChangeConfigurationResponse">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{status =>
+             {enum,['Accepted','Rejected','RebootRequired','NotSupported']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"ClearCacheRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:ClearCacheRequest">>,doc => #{},defs => #{},
+   properties => #{},required => [],additional_properties => false}}.
+{<<"ClearCacheResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:ClearCacheResponse">>,doc => #{},defs => #{},
+   properties => #{status => {enum,['Accepted','Rejected']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"ClearChargingProfileRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:ClearChargingProfileRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{id => {integer,#{}},
+         connectorId => {integer,#{}},
+         chargingProfilePurpose =>
+             {enum,['ChargePointMaxProfile','TxDefaultProfile','TxProfile']},
+         stackLevel => {integer,#{}}},
+   required => [],additional_properties => false}}.
+{<<"ClearChargingProfileResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:ClearChargingProfileResponse">>,doc => #{},
+   defs => #{},
+   properties => #{status => {enum,['Accepted','Unknown']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"DataTransferRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:DataTransferRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{data => {string,#{}},
+         messageId => {string,#{max_length => 50}},
+         vendorId => {string,#{max_length => 255}}},
+   required => [vendorId],
+   additional_properties => false}}.
+{<<"DataTransferResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:DataTransferResponse">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{data => {string,#{}},
+         status =>
+             {enum,['Accepted','Rejected','UnknownMessageId',
+                    'UnknownVendorId']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"DiagnosticsStatusNotificationRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:DiagnosticsStatusNotificationRequest">>,
+   doc => #{},defs => #{},
+   properties =>
+       #{status => {enum,['Idle','Uploaded','UploadFailed','Uploading']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"DiagnosticsStatusNotificationResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:DiagnosticsStatusNotificationResponse">>,
+   doc => #{},defs => #{},properties => #{},required => [],
+   additional_properties => false}}.
+{<<"FirmwareStatusNotificationRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:FirmwareStatusNotificationRequest">>,
+   doc => #{},defs => #{},
+   properties =>
+       #{status =>
+             {enum,['Downloaded','DownloadFailed','Downloading','Idle',
+                    'InstallationFailed','Installing','Installed']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"FirmwareStatusNotificationResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:FirmwareStatusNotificationResponse">>,
+   doc => #{},defs => #{},properties => #{},required => [],
+   additional_properties => false}}.
+{<<"GetCompositeScheduleRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:GetCompositeScheduleRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{connectorId => {integer,#{}},
+         chargingRateUnit => {enum,['A','W']},
+         duration => {integer,#{}}},
+   required => [connectorId,duration],
+   additional_properties => false}}.
+{<<"GetCompositeScheduleResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:GetCompositeScheduleResponse">>,doc => #{},
+   defs => #{},
+   properties =>
+    #{status => {enum,['Accepted','Rejected']},
+      connectorId => {integer,#{}},
+      chargingSchedule =>
+       {object,
+        #{doc => #{},
+          properties =>
+           #{chargingRateUnit => {enum,['A','W']},
+             duration => {integer,#{}},
+             chargingSchedulePeriod =>
+              {array,
+               #{items =>
+                  {object,
+                   #{doc => #{},
+                     properties =>
+                      #{limit => {number,#{}},
+                        numberPhases => {integer,#{}},
+                        startPeriod => {integer,#{}}},
+                     required => [startPeriod,limit],
+                     additional_properties => false}}}},
+             minChargingRate => {number,#{}},
+             startSchedule => datetime},
+          required => [chargingRateUnit,chargingSchedulePeriod],
+          additional_properties => false}},
+      scheduleStart => datetime},
+   required => [status],
+   additional_properties => false}}.
+{<<"GetConfigurationRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:GetConfigurationRequest">>,doc => #{},
+   defs => #{},
+   properties => #{key => {array,#{items => {string,#{max_length => 50}}}}},
+   required => [],additional_properties => false}}.
+{<<"GetConfigurationResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:GetConfigurationResponse">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{configurationKey =>
+             {array,#{items =>
+                          {object,#{doc => #{},
+                                    properties =>
+                                        #{value =>
+                                              {string,#{max_length => 500}},
+                                          key => {string,#{max_length => 50}},
+                                          readonly => boolean},
+                                    required => [key,readonly],
+                                    additional_properties => false}}}},
+         unknownKey => {array,#{items => {string,#{max_length => 50}}}}},
+   required => [],additional_properties => false}}.
+{<<"GetDiagnosticsRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:GetDiagnosticsRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{location => {string,#{}},
+         retries => {integer,#{}},
+         retryInterval => {integer,#{}},
+         startTime => datetime,stopTime => datetime},
+   required => [location],
+   additional_properties => false}}.
+{<<"GetDiagnosticsResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:GetDiagnosticsResponse">>,doc => #{},
+   defs => #{},
+   properties => #{fileName => {string,#{max_length => 255}}},
+   required => [],additional_properties => false}}.
+{<<"GetLocalListVersionRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:GetLocalListVersionRequest">>,doc => #{},
+   defs => #{},properties => #{},required => [],
+   additional_properties => false}}.
+{<<"GetLocalListVersionResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:GetLocalListVersionResponse">>,doc => #{},
+   defs => #{},
+   properties => #{listVersion => {integer,#{}}},
+   required => [listVersion],
+   additional_properties => false}}.
+{<<"HeartbeatRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:HeartbeatRequest">>,doc => #{},defs => #{},
+   properties => #{},required => [],additional_properties => false}}.
+{<<"HeartbeatResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:HeartbeatResponse">>,doc => #{},defs => #{},
+   properties => #{currentTime => datetime},
+   required => [currentTime],
+   additional_properties => false}}.
+{<<"MeterValuesRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:MeterValuesRequest">>,doc => #{},defs => #{},
+   properties =>
+    #{connectorId => {integer,#{}},
+      meterValue =>
+       {array,
+        #{items =>
+           {object,
+            #{doc => #{},
+              properties =>
+               #{timestamp => datetime,
+                 sampledValue =>
+                  {array,
+                   #{items =>
+                      {object,
+                       #{doc => #{},
+                         properties =>
+                          #{unit =>
+                             {enum,
+                              ['Wh',kWh,varh,kvarh,'W',kW,'VA',kVA,var,kvar,
+                               'A','V','K','Celcius','Celsius','Fahrenheit',
+                               'Percent']},
+                            value => {string,#{}},
+                            format => {enum,['Raw','SignedData']},
+                            context =>
+                             {enum,
+                              ['Interruption.Begin','Interruption.End',
+                               'Sample.Clock','Sample.Periodic',
+                               'Transaction.Begin','Transaction.End',
+                               'Trigger','Other']},
+                            location =>
+                             {enum,['Cable','EV','Inlet','Outlet','Body']},
+                            phase =>
+                             {enum,
+                              ['L1','L2','L3','N','L1-N','L2-N','L3-N',
+                               'L1-L2','L2-L3','L3-L1']},
+                            measurand =>
+                             {enum,
+                              ['Energy.Active.Export.Register',
+                               'Energy.Active.Import.Register',
+                               'Energy.Reactive.Export.Register',
+                               'Energy.Reactive.Import.Register',
+                               'Energy.Active.Export.Interval',
+                               'Energy.Active.Import.Interval',
+                               'Energy.Reactive.Export.Interval',
+                               'Energy.Reactive.Import.Interval',
+                               'Power.Active.Export','Power.Active.Import',
+                               'Power.Offered','Power.Reactive.Export',
+                               'Power.Reactive.Import','Power.Factor',
+                               'Current.Import','Current.Export',
+                               'Current.Offered','Voltage','Frequency',
+                               'Temperature','SoC','RPM']}},
+                         required => [value],
+                         additional_properties => false}}}}},
+              required => [timestamp,sampledValue],
+              additional_properties => false}}}},
+      transactionId => {integer,#{}}},
+   required => [connectorId,meterValue],
+   additional_properties => false}}.
+{<<"MeterValuesResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:MeterValuesResponse">>,doc => #{},
+   defs => #{},properties => #{},required => [],
+   additional_properties => false}}.
+{<<"RemoteStartTransactionRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:RemoteStartTransactionRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+    #{idTag => {string,#{max_length => 20}},
+      connectorId => {integer,#{}},
+      chargingProfile =>
+       {object,
+        #{doc => #{},
+          properties =>
+           #{chargingProfilePurpose =>
+              {enum,['ChargePointMaxProfile','TxDefaultProfile','TxProfile']},
+             stackLevel => {integer,#{}},
+             chargingSchedule =>
+              {object,
+               #{doc => #{},
+                 properties =>
+                  #{chargingRateUnit => {enum,['A','W']},
+                    duration => {integer,#{}},
+                    chargingSchedulePeriod =>
+                     {array,
+                      #{items =>
+                         {object,
+                          #{doc => #{},
+                            properties =>
+                             #{limit => {number,#{}},
+                               numberPhases => {integer,#{}},
+                               startPeriod => {integer,#{}}},
+                            required => [startPeriod,limit],
+                            additional_properties => false}}}},
+                    minChargingRate => {number,#{}},
+                    startSchedule => datetime},
+                 required => [chargingRateUnit,chargingSchedulePeriod],
+                 additional_properties => false}},
+             transactionId => {integer,#{}},
+             chargingProfileId => {integer,#{}},
+             chargingProfileKind => {enum,['Absolute','Recurring','Relative']},
+             recurrencyKind => {enum,['Daily','Weekly']},
+             validFrom => datetime,validTo => datetime},
+          required =>
+           [chargingProfileId,stackLevel,chargingProfilePurpose,
+            chargingProfileKind,chargingSchedule],
+          additional_properties => false}}},
+   required => [idTag],
+   additional_properties => false}}.
+{<<"RemoteStartTransactionResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:RemoteStartTransactionResponse">>,doc => #{},
+   defs => #{},
+   properties => #{status => {enum,['Accepted','Rejected']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"RemoteStopTransactionRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:RemoteStopTransactionRequest">>,doc => #{},
+   defs => #{},
+   properties => #{transactionId => {integer,#{}}},
+   required => [transactionId],
+   additional_properties => false}}.
+{<<"RemoteStopTransactionResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:RemoteStopTransactionResponse">>,doc => #{},
+   defs => #{},
+   properties => #{status => {enum,['Accepted','Rejected']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"ReserveNowRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:ReserveNowRequest">>,doc => #{},defs => #{},
+   properties =>
+       #{idTag => {string,#{max_length => 20}},
+         expiryDate => datetime,
+         parentIdTag => {string,#{max_length => 20}},
+         reservationId => {integer,#{}},
+         connectorId => {integer,#{}}},
+   required => [connectorId,expiryDate,idTag,reservationId],
+   additional_properties => false}}.
+{<<"ReserveNowResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:ReserveNowResponse">>,doc => #{},defs => #{},
+   properties =>
+       #{status =>
+             {enum,['Accepted','Faulted','Occupied','Rejected',
+                    'Unavailable']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"ResetRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:ResetRequest">>,doc => #{},defs => #{},
+   properties => #{type => {enum,['Hard','Soft']}},
+   required => [type],
+   additional_properties => false}}.
+{<<"ResetResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:ResetResponse">>,doc => #{},defs => #{},
+   properties => #{status => {enum,['Accepted','Rejected']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"SendLocalListRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:SendLocalListRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+    #{listVersion => {integer,#{}},
+      localAuthorizationList =>
+       {array,
+        #{items =>
+           {object,
+            #{doc => #{},
+              properties =>
+               #{idTag => {string,#{max_length => 20}},
+                 idTagInfo =>
+                  {object,
+                   #{doc => #{},
+                     properties =>
+                      #{status =>
+                         {enum,
+                          ['Accepted','Blocked','Expired','Invalid',
+                           'ConcurrentTx']},
+                        expiryDate => datetime,
+                        parentIdTag => {string,#{max_length => 20}}},
+                     required => [status],
+                     additional_properties => false}}},
+              required => [idTag],
+              additional_properties => false}}}},
+      updateType => {enum,['Differential','Full']}},
+   required => [listVersion,updateType],
+   additional_properties => false}}.
+{<<"SendLocalListResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:SendLocalListResponse">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{status =>
+             {enum,['Accepted','Failed','NotSupported','VersionMismatch']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"SetChargingProfileRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:SetChargingProfileRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+    #{connectorId => {integer,#{}},
+      csChargingProfiles =>
+       {object,
+        #{doc => #{},
+          properties =>
+           #{chargingProfilePurpose =>
+              {enum,['ChargePointMaxProfile','TxDefaultProfile','TxProfile']},
+             stackLevel => {integer,#{}},
+             chargingSchedule =>
+              {object,
+               #{doc => #{},
+                 properties =>
+                  #{chargingRateUnit => {enum,['A','W']},
+                    duration => {integer,#{}},
+                    chargingSchedulePeriod =>
+                     {array,
+                      #{items =>
+                         {object,
+                          #{doc => #{},
+                            properties =>
+                             #{limit => {number,#{}},
+                               numberPhases => {integer,#{}},
+                               startPeriod => {integer,#{}}},
+                            required => [startPeriod,limit],
+                            additional_properties => false}}}},
+                    minChargingRate => {number,#{}},
+                    startSchedule => datetime},
+                 required => [chargingRateUnit,chargingSchedulePeriod],
+                 additional_properties => false}},
+             transactionId => {integer,#{}},
+             chargingProfileId => {integer,#{}},
+             chargingProfileKind => {enum,['Absolute','Recurring','Relative']},
+             recurrencyKind => {enum,['Daily','Weekly']},
+             validFrom => datetime,validTo => datetime},
+          required =>
+           [chargingProfileId,stackLevel,chargingProfilePurpose,
+            chargingProfileKind,chargingSchedule],
+          additional_properties => false}}},
+   required => [connectorId,csChargingProfiles],
+   additional_properties => false}}.
+{<<"SetChargingProfileResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:SetChargingProfileResponse">>,doc => #{},
+   defs => #{},
+   properties => #{status => {enum,['Accepted','Rejected','NotSupported']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"StartTransactionRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:StartTransactionRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{timestamp => datetime,
+         idTag => {string,#{max_length => 20}},
+         reservationId => {integer,#{}},
+         connectorId => {integer,#{}},
+         meterStart => {integer,#{}}},
+   required => [connectorId,idTag,meterStart,timestamp],
+   additional_properties => false}}.
+{<<"StartTransactionResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:StartTransactionResponse">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{idTagInfo =>
+             {object,
+                 #{doc => #{},
+                   properties =>
+                       #{status =>
+                             {enum,
+                                 ['Accepted','Blocked','Expired','Invalid',
+                                  'ConcurrentTx']},
+                         expiryDate => datetime,
+                         parentIdTag => {string,#{max_length => 20}}},
+                   required => [status],
+                   additional_properties => false}},
+         transactionId => {integer,#{}}},
+   required => [idTagInfo,transactionId],
+   additional_properties => false}}.
+{<<"StatusNotificationRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:StatusNotificationRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{info => {string,#{max_length => 50}},
+         status =>
+             {enum,['Available','Preparing','Charging','SuspendedEVSE',
+                    'SuspendedEV','Finishing','Reserved','Unavailable',
+                    'Faulted']},
+         timestamp => datetime,
+         connectorId => {integer,#{}},
+         vendorId => {string,#{max_length => 255}},
+         errorCode =>
+             {enum,['ConnectorLockFailure','EVCommunicationError',
+                    'GroundFailure','HighTemperature','InternalError',
+                    'LocalListConflict','NoError','OtherError',
+                    'OverCurrentFailure','PowerMeterFailure',
+                    'PowerSwitchFailure','ReaderFailure','ResetFailure',
+                    'UnderVoltage','OverVoltage','WeakSignal']},
+         vendorErrorCode => {string,#{max_length => 50}}},
+   required => [connectorId,errorCode,status],
+   additional_properties => false}}.
+{<<"StatusNotificationResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:StatusNotificationResponse">>,doc => #{},
+   defs => #{},properties => #{},required => [],
+   additional_properties => false}}.
+{<<"StopTransactionRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:StopTransactionRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+    #{reason =>
+       {enum,
+        ['EmergencyStop','EVDisconnected','HardReset','Local','Other',
+         'PowerLoss','Reboot','Remote','SoftReset','UnlockCommand',
+         'DeAuthorized']},
+      timestamp => datetime,
+      idTag => {string,#{max_length => 20}},
+      transactionId => {integer,#{}},
+      meterStop => {integer,#{}},
+      transactionData =>
+       {array,
+        #{items =>
+           {object,
+            #{doc => #{},
+              properties =>
+               #{timestamp => datetime,
+                 sampledValue =>
+                  {array,
+                   #{items =>
+                      {object,
+                       #{doc => #{},
+                         properties =>
+                          #{unit =>
+                             {enum,
+                              ['Wh',kWh,varh,kvarh,'W',kW,'VA',kVA,var,kvar,
+                               'A','V','K','Celcius','Fahrenheit','Percent']},
+                            value => {string,#{}},
+                            format => {enum,['Raw','SignedData']},
+                            context =>
+                             {enum,
+                              ['Interruption.Begin','Interruption.End',
+                               'Sample.Clock','Sample.Periodic',
+                               'Transaction.Begin','Transaction.End',
+                               'Trigger','Other']},
+                            location =>
+                             {enum,['Cable','EV','Inlet','Outlet','Body']},
+                            phase =>
+                             {enum,
+                              ['L1','L2','L3','N','L1-N','L2-N','L3-N',
+                               'L1-L2','L2-L3','L3-L1']},
+                            measurand =>
+                             {enum,
+                              ['Energy.Active.Export.Register',
+                               'Energy.Active.Import.Register',
+                               'Energy.Reactive.Export.Register',
+                               'Energy.Reactive.Import.Register',
+                               'Energy.Active.Export.Interval',
+                               'Energy.Active.Import.Interval',
+                               'Energy.Reactive.Export.Interval',
+                               'Energy.Reactive.Import.Interval',
+                               'Power.Active.Export','Power.Active.Import',
+                               'Power.Offered','Power.Reactive.Export',
+                               'Power.Reactive.Import','Power.Factor',
+                               'Current.Import','Current.Export',
+                               'Current.Offered','Voltage','Frequency',
+                               'Temperature','SoC','RPM']}},
+                         required => [value],
+                         additional_properties => false}}}}},
+              required => [timestamp,sampledValue],
+              additional_properties => false}}}}},
+   required => [transactionId,timestamp,meterStop],
+   additional_properties => false}}.
+{<<"StopTransactionResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:StopTransactionResponse">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{idTagInfo =>
+             {object,
+                 #{doc => #{},
+                   properties =>
+                       #{status =>
+                             {enum,
+                                 ['Accepted','Blocked','Expired','Invalid',
+                                  'ConcurrentTx']},
+                         expiryDate => datetime,
+                         parentIdTag => {string,#{max_length => 20}}},
+                   required => [status],
+                   additional_properties => false}}},
+   required => [],additional_properties => false}}.
+{<<"TriggerMessageRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:TriggerMessageRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{connectorId => {integer,#{}},
+         requestedMessage =>
+             {enum,['BootNotification','DiagnosticsStatusNotification',
+                    'FirmwareStatusNotification','Heartbeat','MeterValues',
+                    'StatusNotification']}},
+   required => [requestedMessage],
+   additional_properties => false}}.
+{<<"TriggerMessageResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:TriggerMessageResponse">>,doc => #{},
+   defs => #{},
+   properties => #{status => {enum,['Accepted','Rejected','NotImplemented']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"UnlockConnectorRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:UnlockConnectorRequest">>,doc => #{},
+   defs => #{},
+   properties => #{connectorId => {integer,#{}}},
+   required => [connectorId],
+   additional_properties => false}}.
+{<<"UnlockConnectorResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:UnlockConnectorResponse">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{status => {enum,['Unlocked','UnlockFailed','NotSupported']}},
+   required => [status],
+   additional_properties => false}}.
+{<<"UpdateFirmwareRequest">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:UpdateFirmwareRequest">>,doc => #{},
+   defs => #{},
+   properties =>
+       #{location => {string,#{}},
+         retries => {integer,#{}},
+         retryInterval => {integer,#{}},
+         retrieveDate => datetime},
+   required => [location,retrieveDate],
+   additional_properties => false}}.
+{<<"UpdateFirmwareResponse">>,
+ #{id => <<"urn:OCPP:1.6:2019:12:UpdateFirmwareResponse">>,doc => #{},
+   defs => #{},properties => #{},required => [],
+   additional_properties => false}}.

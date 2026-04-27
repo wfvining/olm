@@ -1,296 +1,57 @@
 -module(cmap).
--moduledoc """
-Constrained maps.
+-include_lib("eunit/include/eunit.hrl").
 
-This module defines functions for constructing and validating maps
-with constrained keys and values.
-""".
+-export([new/2, to_json/1]).
 
--export([new/2, new/3, to_json/1]).
--export([
-    string/1,
-    string_/1,
-    datetime/1,
-    enum_/1,
-    integer/1,
-    integer_/1,
-    number/1,
-    boolean/1,
-    list/1,
-    list_/1
-]).
+-export_type([mapspec/0, value/0, object/0, array/0, primitive/0]).
 
--export_type([spec/0]).
+-type mapspec() :: #{
+    required => [atom()],
+    properties := #{atom() => itemspec()},
+    additional_properties => boolean(),
+    defs => #{atom() => itemspec()}
+}.
+-type itemspec() :: primitivespec() | {object, mapspec()} | {array, arrayspec()} | {ref, atom()}.
+-type primitivespec() ::
+    boolean
+    | datetime
+    | any
+    | {number, numberspec(float() | integer())}
+    | {integer, numberspec(integer())}
+    | {float, numberspec(float())}
+    | {string, stringspec()}
+    | {enum, [atom()]}.
+-type numberspec(T) :: #{min => T, max => T}.
+-type stringspec() :: #{max_length => non_neg_integer()}.
+-type arrayspec() :: #{
+    items := itemspec(), min_items => non_neg_integer(), max_items => non_neg_integer()
+}.
+-type value() :: object() | array() | primitive().
+-type array() :: [primitive() | array() | object()].
+-type object() :: #{atom() | binary() => primitive() | array() | object()}.
+-type primitive() ::
+    number()
+    | binary()
+    | boolean()
+    | datetime:datetime()
+    | atom().
+-type raw_object() :: #{
+    atom() | binary() =>
+        json:decode_value()
+        | datetime:datetime()
+        | raw_object()
+        | [primitive() | array() | raw_object()]
+}.
 
--type spec() :: #{atom => fun((any()) -> any())}.
--type string_constraints() :: #{max_length => non_neg_integer()}.
--type integer_constraints() :: #{min => integer(), max => integer()}.
+-spec new(raw_object(), mapspec()) -> object().
+new(Map, Spec) when is_map(Map), is_map(Spec) ->
+    build_value(Map, {object, Spec}, maps:get(defs, Spec, #{}));
+new(_, _) ->
+    error(badarg).
 
--doc """
-Ensure `Value` is a unicode string. Returns the string as a unicode binary.
-""".
--spec string(unicode:unicode_binary() | string()) -> unicode:unicode_binary().
-string(Bin) when is_binary(Bin) ->
-    Bin;
-string(Str) when is_list(Str) ->
-    Valid = lists:all(
-        fun
-            (X) when is_integer(X) -> (X =< 16#10ffff) and (X >= 0);
-            (_) -> false
-        end,
-        Str
-    ),
-    ValidType = lists:all(fun is_integer/1, Str),
-    if
-        ValidType and Valid ->
-            unicode:characters_to_binary(Str);
-        ValidType and not Valid ->
-            error({badvalue, {not_unicode, Str}});
-        not ValidType ->
-            error({badtype, {not_string, Str}})
-    end;
-string(Term) ->
-    error({badtype, {not_string, Term}}).
-
--doc """
-Return a constructor for a constrained string.
-""".
--spec string_(string_constraints()) ->
-    fun((string() | unicode:unicode_binary()) -> unicode:unicode_binary()).
-string_(#{max_length := MaxLen}) ->
-    fun(Str) ->
-        Str1 = string(Str),
-        case string:length(Str1) > MaxLen of
-            true ->
-                error(
-                    {badvalue, {string_too_long, [{len, string:length(Str1)}, {limit, MaxLen}]}}
-                );
-            false ->
-                Str1
-        end
-    end;
-string_(_) ->
-    fun cmap:string/1.
-
-datetime(List) when is_list(List) ->
-    try unicode:characters_to_binary(List) of
-        {_, _, _} ->
-            error({badtype, {not_datetime, List}});
-        Result ->
-            try
-                datetime(Result)
-            catch
-                error:{Err, {Reason, _}} ->
-                    error({Err, {Reason, List}})
-            end
-    catch
-        error:badarg ->
-            error({badtype, {not_datetime, List}})
-    end;
-datetime(Bin) when is_binary(Bin) ->
-    try
-        datetime:from_rfc3339(Bin)
-    catch
-        error:_ ->
-            case unicode:characters_to_list(Bin) of
-                {_, _, _} ->
-                    error({badtype, {not_datetime, Bin}});
-                _ ->
-                    error({badvalue, {invalid_datetime, Bin}})
-            end
-    end;
-datetime(Datetime = {Date, {H, M, S}}) when H < 24, H >= 0, M < 60, M >= 0, S < 60, S >= 0 ->
-    case calendar:valid_date(Date) of
-        true ->
-            datetime:from_local_time(Datetime);
-        false ->
-            error({badvalue, {invalid_date, Date}})
-    end;
-datetime({{_, _, _}, Time = {_, _, _}}) ->
-    error({badvalue, {invalid_time, Time}});
-datetime(Value) ->
-    error({badtype, {not_datetime, Value}}).
-
--spec enum_(Values :: [atom()]) -> fun((atom() | binary()) -> atom()).
-enum_(Values) ->
-    fun
-        (Val) when is_binary(Val) ->
-            try
-                V = binary_to_existing_atom(Val),
-                case lists:member(V, Values) of
-                    true -> V;
-                    false -> error({badvalue, {invalid_enum_value, V}})
-                end
-            catch
-                error:_ ->
-                    error({badvalue, {invalid_enum_value, Val}})
-            end;
-        (Val) when is_list(Val) ->
-            try
-                V = list_to_existing_atom(Val),
-                case lists:member(V, Values) of
-                    true -> V;
-                    false -> error({badvalue, {invalid_enum_value, V}})
-                end
-            catch
-                error:_ ->
-                    error({badvalue, {invalid_enum_value, Val}})
-            end;
-        (Val) when is_atom(Val) ->
-            case lists:member(Val, Values) of
-                true -> Val;
-                false -> error({badvalue, {invalid_enum_value, Val}})
-            end;
-        (Val) ->
-            error({badtype, {not_enum, Val}})
-    end.
-
--spec integer(integer()) -> integer().
-integer(I) when is_integer(I) ->
-    I;
-integer(I) ->
-    error({badtype, {not_integer, I}}).
-
--spec integer_(integer_constraints()) -> fun((integer()) -> integer()).
-integer_(Constraints) ->
-    fun
-        (I) when is_integer(I) ->
-            Sat = maps:fold(
-                fun
-                    (min, Min, Acc) ->
-                        Acc andalso I >= Min;
-                    (max, Max, Acc) ->
-                        Acc andalso I =< Max
-                end,
-                true,
-                Constraints
-            ),
-            if
-                Sat -> I;
-                not Sat -> error({badvalue, {invalid, I}})
-            end;
-        (I) ->
-            error({badtype, {not_integer, I}})
-    end.
-
--spec number(Num :: number()) -> number().
-number(Num) when is_number(Num) ->
-    Num;
-number(NotNumber) ->
-    error({badtype, {not_number, NotNumber}}).
-
--spec boolean(Bool :: boolean()) -> boolean().
-boolean(Bool) when is_boolean(Bool) ->
-    Bool;
-boolean(NotBool) ->
-    error({badtype, {not_boolean, NotBool}}).
-
--doc """
-Constuct a list of any length with arbitrary items.
-""".
--spec list([X]) -> [X].
-list(List) when is_list(List) ->
-    List;
-list(X) ->
-    error({badtype, {not_list, X}}).
-
--doc """
-Construct a constrained list.
-""".
--spec list_(
-    #{
-        min_length => non_neg_integer(),
-        max_length => non_neg_integer(),
-        items => fun((X) -> Item)
-    }
-) -> fun(([X]) -> [Item]).
-list_(Options) ->
-    Item = maps:get(items, Options, fun(X) -> X end),
-    MinLength = maps:get(min_length, Options, 0),
-    MaxLength = maps:get(max_length, Options, infinity),
-    fun
-        (Xs) when is_list(Xs), length(Xs) >= MinLength, length(Xs) =< MaxLength ->
-            [
-                try
-                    Item(X)
-                catch
-                    error:Reason ->
-                        error({badvalue, {baditem, {I, Reason}}})
-                end
-             || {I, X} <- lists:enumerate(Xs)
-            ];
-        (Xs) when is_list(Xs), length(Xs) < MinLength ->
-            error({badvalue, {too_short, Xs}});
-        (Xs) when is_list(Xs), length(Xs) > MaxLength ->
-            error({badvalue, {too_long, Xs}});
-        (X) ->
-            error({badtype, {not_list, X}})
-    end.
-
--doc #{equiv => new(Spec, Map, [])}.
--spec new(spec(), #{atom() | binary() | string() => term()}) -> #{atom() | binary() => term()}.
-new(Spec, Map) ->
-    new(Spec, Map, []).
-
--spec new(
-    Spec :: #{atom() => fun((any()) -> any())},
-    #{atom() | binary() | string() => term()},
-    Options :: [Option]
-) -> #{atom() | binary() => term()} when
-    Option :: {required, [atom()]} | {extra_keys, boolean()} | extra_keys.
-new(Spec, Map, Options) when is_map(Map) ->
-    Required = proplists:get_value(required, Options, []),
-    maybe
-        true ?= lists:all(fun(K) -> lists:member(K, maps:keys(Spec)) end, Required),
-        M = maps:fold(
-            fun(K, V, Acc) ->
-                Key = to_key(K, maps:keys(Spec)),
-                case proplists:get_bool(extra_keys, Options) of
-                    false when is_atom(Key), is_map_key(Key, Spec) ->
-                        Constructor = maps:get(Key, Spec),
-                        Acc#{Key => Constructor(V)};
-                    false ->
-                        error({badvalue, {extra_key, K}});
-                    true ->
-                        Constructor = maps:get(Key, Spec, fun(X) -> X end),
-                        Acc#{Key => Constructor(V)}
-                end
-            end,
-            #{},
-            Map
-        ),
-        [] ?= Required -- maps:keys(M),
-        M
-    else
-        false ->
-            error(badarg);
-        Missing when is_list(Missing), length(Missing) > 0 ->
-            error({missing_keys, Missing})
-    end;
-new(_, NotMap, _) ->
-    error({badtype, {not_map, NotMap}}).
-
-to_key(K, Keys) when is_atom(K) ->
-    case lists:member(K, Keys) of
-        true ->
-            K;
-        false ->
-            atom_to_binary(K)
-    end;
-to_key(K, Keys) when is_binary(K) ->
-    try
-        to_key(binary_to_existing_atom(K, utf8), Keys)
-    catch
-        error:badarg ->
-            K
-    end;
-to_key(K, Keys) when is_list(K) ->
-    try
-        to_key(list_to_existing_atom(K), Keys)
-    catch
-        error:badarg ->
-            unicode:characters_to_binary(K)
-    end.
+-spec to_json(map()) -> iodata().
+to_json(Map) ->
+    json:encode(Map, fun json_encoder/2).
 
 json_encoder(Term, Encoder) when is_map(Term) ->
     json:encode_map(Term, Encoder);
@@ -304,5 +65,223 @@ json_encoder(Term, Encoder) ->
             json:encode_value(Term, Encoder)
     end.
 
-to_json(CMap) ->
-    json:encode(CMap, fun json_encoder/2).
+build_value(X, any, _) ->
+    {ok, X};
+build_value(Bool, boolean, _) when is_boolean(Bool) ->
+    {ok, Bool};
+build_value(_, boolean, _) ->
+    {error, type_error};
+build_value(X, {integer, _}, _) when not is_integer(X) ->
+    {error, type_error};
+build_value(X, {float, _}, _) when not is_float(X) ->
+    {error, type_error};
+build_value(X, {number, _}, _) when not is_number(X) ->
+    {error, type_error};
+build_value(X, {string, _}, _) when not is_binary(X) ->
+    {error, type_error};
+build_value(X, {string, Constraints}, _) when is_binary(X) ->
+    MaxLen = maps:get(max_length, Constraints, inf),
+    case unicode:characters_to_binary(X, utf8) of
+        {_, _, _} ->
+            {error, type_error};
+        _ ->
+            Len = string:length(X),
+            if
+                Len =< MaxLen ->
+                    {ok, X};
+                Len > MaxLen ->
+                    {error, value_error}
+            end
+    end;
+build_value(X, {enum, _}, _) when not is_atom(X), not is_binary(X) ->
+    {error, type_error};
+build_value(X, {Type, Constraints}, _) when
+    Type =:= integer, is_integer(X);
+    Type =:= float, is_float(X);
+    Type =:= number, is_number(X)
+->
+    Min = maps:get(min, Constraints, inf),
+    Max = maps:get(max, Constraints, inf),
+    case {Min, Max} of
+        {inf, inf} ->
+            {ok, X};
+        {Min, inf} when X >= Min ->
+            {ok, X};
+        {inf, Max} when X =< Max ->
+            {ok, X};
+        {Min, Max} when X >= Min, X =< Max ->
+            {ok, X};
+        _ ->
+            {error, value_error}
+    end;
+build_value(X, {enum, Values}, Defs) when is_binary(X) ->
+    try
+        build_value(binary_to_existing_atom(X, utf8), {enum, Values}, Defs)
+    catch
+        error:badarg ->
+            {error, value_error}
+    end;
+build_value(X, {enum, Values}, _) when is_atom(X) ->
+    case lists:member(X, Values) of
+        true ->
+            {ok, X};
+        false ->
+            {error, value_error}
+    end;
+build_value(X, datetime, _) when is_binary(X) ->
+    try
+        {ok, datetime:from_rfc3339(X)}
+    catch
+        error:_ ->
+            {error, type_error}
+    end;
+build_value({{_, _, _}, {_, _, _}} = DT, datetime, _) ->
+    try
+        {ok, datetime:from_local_time(DT)}
+    catch
+        error:_ ->
+            {error, value_error}
+    end;
+build_value(X, datetime, _) ->
+    case datetime:is_datetime(X) of
+        true ->
+            {ok, X};
+        false ->
+            {error, type_error}
+    end;
+build_value(Xs, {array, #{items := ItemConstraint} = Constraints}, Defs) when is_list(Xs) ->
+    try
+        {Vals, _} = lists:mapfoldl(
+            fun(X, N) ->
+                case build_value(X, ItemConstraint, Defs) of
+                    {ok, Val} ->
+                        {Val, N + 1};
+                    {error, Reason} ->
+                        throw({error, extend_reason(Reason, {element, N}, X, ItemConstraint)})
+                end
+            end,
+            1,
+            Xs
+        ),
+        Min = maps:get(min_items, Constraints, 0),
+        Max = maps:get(max_items, Constraints, inf),
+        if
+            length(Vals) =< Max,
+            length(Vals) >= Min ->
+                {ok, Vals};
+            true ->
+                {error, occurrence_error}
+        end
+    catch
+        throw:{error, Reason} ->
+            {error, Reason}
+    end;
+build_value(_, {array, _}, _) ->
+    {error, type_error};
+build_value(X, {object, #{properties := Properties} = Constraints}, Defs) when is_map(X) ->
+    try
+        Result = maps:fold(
+            fun
+                F(K, V, Acc) when is_map_key(K, Properties) ->
+                    Spec = maps:get(K, Properties),
+                    case build_value(V, Spec, Defs) of
+                        {ok, Val} -> Acc#{K => Val};
+                        {error, Reason} -> throw({property_error, K, Reason})
+                    end;
+                F(K, V, Acc) when is_binary(K) ->
+                    case maybe_to_atom(K) of
+                        Key when is_map_key(Key, Properties) ->
+                            try
+                                F(Key, V, Acc)
+                            catch
+                                throw:{property_error, Key, Reason} ->
+                                    throw({property_error, K, Reason})
+                            end;
+                        _ ->
+                            %% handle this case specially so the error has the original key and not an atom
+                            Acc#{K => V}
+                    end;
+                F(K, V, Acc) ->
+                    %% Pass through all unknown keys. They will be handled later
+                    Acc#{K => V}
+            end,
+            #{},
+            X
+        ),
+        case
+            {
+                maps:get(required, Constraints, []) -- maps:keys(Result),
+                maps:get(additional_properties, Constraints, false),
+                maps:keys(Result) -- maps:keys(Properties)
+            }
+        of
+            {[], _, []} ->
+                {ok, Result};
+            {[], true, _} ->
+                {ok, Result};
+            {Missing, _, _} when length(Missing) > 0 ->
+                {error, {property_error, {missing_properties, Missing}}};
+            {_, false, Extra} when length(Extra) > 0 ->
+                {error, {property_error, {illegal_properties, Extra}}}
+        end
+    catch
+        throw:{property_error, Key, Reason} ->
+            %% An error occured when loading the value for property `Key`
+            {error,
+                extend_reason(
+                    Reason,
+                    Key,
+                    maps:get(Key, X),
+                    maps:get(
+                        Key, Properties, maps:get(maybe_to_atom(Key), Properties, '$undefined')
+                    )
+                )}
+    end;
+build_value(X, {object, _}, _) when not is_map(X) ->
+    {error, type_error};
+build_value(X, {ref, Ref}, Defs) ->
+    Spec = resolve_ref(Ref, Defs),
+    build_value(X, Spec, Defs).
+
+resolve_ref(Ref, Defs) when is_map_key(Ref, Defs) ->
+    resolve_ref(maps:get(Ref, Defs), Defs, [Ref]);
+resolve_ref(Ref, _) ->
+    error({badref, Ref}).
+
+resolve_ref({ref, Ref}, Defs, Path) when is_map_key(Ref, Defs) ->
+    case lists:member(Ref, Path) of
+        true ->
+            error({circularref, lists:reverse(Path)});
+        false ->
+            resolve_ref(maps:get(Ref, Defs), Defs, [Ref | Path])
+    end;
+resolve_ref({ref, Ref}, _, _) ->
+    error({badref, Ref});
+resolve_ref(Spec, _, _) ->
+    Spec.
+
+maybe_to_atom(K) when is_atom(K) ->
+    K;
+maybe_to_atom(K) when is_binary(K) ->
+    try
+        binary_to_existing_atom(K, utf8)
+    catch
+        error:_ ->
+            K
+    end.
+
+extend_reason(
+    {property_error, {Reason, #{key := KeyPath, value := _, spec := _} = ErrorDescription}},
+    Key,
+    _Value,
+    _Spec
+) ->
+    {Reason, ErrorDescription#{key => [Key | KeyPath]}};
+extend_reason({property_error, _} = Reason, Key, Value, Spec) ->
+    {Reason, #{key => [Key], value => Value, spec => Spec}};
+extend_reason(
+    {Reason, #{key := KeyPath, value := _, spec := _} = ErrorDescription}, Key, _Value, _Spec
+) ->
+    {Reason, ErrorDescription#{key => [Key | KeyPath]}};
+extend_reason(Reason, Key, Value, Spec) ->
+    {Reason, #{key => [Key], value => Value, spec => Spec}}.

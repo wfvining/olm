@@ -83,6 +83,7 @@ establish_state(_, connected, connected) ->
 establish_state(StationID, State, NewState) ->
     error(not_implemented).
 
+%% [x]
 connect_test_() ->
     {setup, fun setup_deps/0, fun teardown_deps/1,
         ?mockStationManager(
@@ -97,6 +98,7 @@ connect_test_() ->
             )
         )}.
 
+%% [x]
 down_test_() ->
     %% TODO these tests should succeed no matter what state the station is in.
     {setup, fun setup_deps/0, fun teardown_deps/1,
@@ -122,6 +124,7 @@ down_test_() ->
             %% TODO what should happen to the connection process if the station process exits?
         ])}.
 
+%% [x]
 connect_rejected_test_() ->
     {setup, fun setup_deps/0, fun teardown_deps/1,
         ?mockStationManager(
@@ -134,6 +137,7 @@ connect_rejected_test_() ->
             )
         )}.
 
+%% [x]
 connection_handler_error(StationID) ->
     {"connection fails when handler returns {error, _}", fun() ->
         meck:expect(ocpp_station_manager, connect, fun
@@ -145,6 +149,7 @@ connection_handler_error(StationID) ->
         ?assert(meck:validate(ocpp_station_manager))
     end}.
 
+%% [x]
 connection_rejected(StationID) ->
     {"connection fails when rejected by handler", fun() ->
         %% ocpp_station_manager mock is created in setup. We just
@@ -160,21 +165,25 @@ connection_rejected(StationID) ->
         ?assert(meck:validate(ocpp_station_manager))
     end}.
 
+%% [x]
 connect_invalid_station(_StationID) ->
     {"connecting to a station ID that does not exist fails",
         ?_assertError(nostation, ocpp_station:connect(<<"invalid">>, ['2.0.1']))}.
 
+%% [x]
 connect_station(StationID) ->
     {"can connect to a station", fun() ->
         {ok, '2.0.1'} = ocpp_station:connect(StationID, ['2.0.1'])
     end}.
 
+%% [x]
 connect_station_again(StationID) ->
     {"the same process can't connect to a station twice", fun() ->
         {ok, '2.1'} = ocpp_station:connect(StationID, ['1.6', '2.0.1', '2.1']),
         ?assertMatch({error, already_connected}, ocpp_station:connect(StationID, ['2.1']))
     end}.
 
+%% [x]
 connect_station_twice(StationID) ->
     {"two processes can't connect to the same station", fun() ->
         Self = self(),
@@ -200,6 +209,7 @@ connect_station_twice(StationID) ->
         ?assert(lists:member({error, already_connected}, Messages))
     end}.
 
+%% [x]
 reconnect_voluntary({StationID, Pid}) ->
     {"different process can connect to station after original connection ends voluntarily", fun() ->
             true = link(Pid),
@@ -212,6 +222,7 @@ reconnect_voluntary({StationID, Pid}) ->
             ?assertEqual({ok, '2.0.1'}, ocpp_station:connect(StationID, ['2.0.1']))
         end}.
 
+%% [x]
 reconnect_killed({StationID, Pid}) ->
     {"different process can connect to station after original connection exits abnormally", fun() ->
             true = link(Pid),
@@ -224,6 +235,7 @@ reconnect_killed({StationID, Pid}) ->
             ?assertEqual({ok, '2.0.1'}, ocpp_station:connect(StationID, ['2.0.1']))
         end}.
 
+%% [x]
 rpc_from_wrong_process_test_() ->
     %% TODO expand this to all other states
     {setup, fun setup_deps/0, fun teardown_deps/1,
@@ -265,8 +277,67 @@ conn(StationID, Version) ->
             conn(StationID, Version);
         stop ->
             %% TODO disconnect politely
-            ?debugMsg("conn exiting"),
             stopped
+    end.
+
+conn_control(StationID) ->
+    receive
+        {connect, From, Versions} ->
+            {Pid, Version} = connect(StationID, Versions),
+            From ! {ok, Version},
+            conn_control(StationID, Pid, Version);
+        stop ->
+            ok
+    after 1000 ->
+        error(timeout)
+    end.
+
+conn_control(StationID, Pid, Version) ->
+    receive
+        {'DOWN', _, process, Pid, Info} when Info =/= normal ->
+            error({client_failed, Info});
+        {do, From, Fun} ->
+            Pid ! {do, From, Fun},
+            conn_control(StationID, Pid, Version);
+        disconnect ->
+            stop_client(Pid),
+            conn_control(StationID);
+        stop ->
+            %% stop the client, we wait for the 'DOWN' message to transition states
+            stop_client(Pid),
+            self() ! stop,
+            conn_control(StationID);
+        {exit, Reason} ->
+            exit(Pid, Reason);
+        Message ->
+            error({unexpected_message, Message})
+    end.
+
+stop_client(Pid) ->
+    Pid ! stop,
+    receive
+        {'DOWN', _, process, Pid, normal} ->
+            ok
+    end.
+
+connect_client(Pid, Versions) ->
+    Pid ! {connect, self(), Versions},
+    receive
+        {ok, Ver} -> Ver
+    after 1000 ->
+        error(timeout)
+    end.
+
+disconnect_client(Pid) ->
+    Pid ! disconnect.
+
+do_client(Pid, Fun) ->
+    Pid ! {do, self(), Fun},
+    receive
+        {result, Result} ->
+            Result;
+        Other ->
+            error({unexpected_result, Other})
     end.
 
 ocpp_client_recv(Timeout) ->
@@ -294,6 +365,91 @@ teardown_conn({Pid, StationID, _}) ->
         {'DOWN', Ref, process, Pid, _} -> ok
     end,
     teardown_station(StationID).
+
+boot_to(StationID, State) ->
+    boot_to(StationID, State, []).
+
+boot_to(StationID, State, Extra) ->
+    Conn = spawn_link(fun() -> conn_control(StationID) end),
+    Version = connect_client(Conn, ['2.0.1']),
+    ConnState = {Conn, StationID, Version},
+    boot_to_(State, ConnState, Extra),
+    ConnState.
+
+boot_to_(accepted, Conn = {_Pid, _StationID, Version}, Extra) ->
+    %% Can get away with this because boot notifications are the same in all three versions
+    {ok, BootNotificationRequest} = ocpp_message:new(Version, ~"BootNotificationRequest", #{
+        reason => 'PowerUp', chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
+    }),
+    {ok, BootNotificationResponse} = ocpp_message:new(Version, ~"BootNotificationResponse", #{
+        status => 'Accepted', currentTime => {{2025, 12, 12}, {1, 2, 3}}, interval => 0
+    }),
+    do_call_response(Conn, [{BootNotificationRequest, BootNotificationResponse} | Extra]);
+boot_to_(rejected, Conn = {_Pid, _StationID, Version}, Extra) ->
+    {ok, BootNotificationRequest} = ocpp_message:new(Version, ~"BootNotificationRequest", #{
+        reason => 'PowerUp', chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
+    }),
+    {ok, BootNotificationResponse} = ocpp_message:new(Version, ~"BootNotificationResponse", #{
+        status => 'Rejected', currentTime => {{2025, 12, 12}, {1, 2, 3}}, interval => 0
+    }),
+    do_call_response(Conn, [{BootNotificationRequest, BootNotificationResponse} | Extra]);
+boot_to_(pending, Conn = {_Pid, _StationID, Version}, Extra) ->
+    {ok, BootNotificationRequest} = ocpp_message:new(Version, ~"BootNotificationRequest", #{
+        reason => 'PowerUp', chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
+    }),
+    {ok, BootNotificationResponse} = ocpp_message:new(Version, ~"BootNotificationResponse", #{
+        status => 'Pending', currentTime => {{2025, 12, 12}, {1, 2, 3}}, interval => 0
+    }),
+    do_call_response(Conn, [{BootNotificationRequest, BootNotificationResponse} | Extra]);
+boot_to_(connected, Conn, Extra) ->
+    do_call_response(Conn, Extra);
+boot_to_(provisioning, Conn = {_, _, Version}, Extra) ->
+    {ok, BootNotificationRequest} = ocpp_message:new(Version, ~"BootNotificationRequest", #{
+        reason => 'PowerUp', chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
+    }),
+    do_call_response(Conn, [{BootNotificationRequest, undefined} | Extra]);
+boot_to_(offline, Conn = {Pid, _, Version}, Extra) ->
+    {ok, BootNotificationRequest} = ocpp_message:new(Version, ~"BootNotificationRequest", #{
+        reason => 'PowerUp', chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
+    }),
+    {ok, BootNotificationResponse} = ocpp_message:new(Version, ~"BootNotificationResponse", #{
+        status => 'Accepted', currentTime => {{2025, 12, 12}, {1, 2, 3}}, interval => 0
+    }),
+    do_call_response(Conn, [{BootNotificationRequest, BootNotificationResponse} | Extra]),
+    disconnect_client(Pid);
+boot_to_(reconnecting, Conn = {Pid, _, Version}, Extra) ->
+    {ok, BootNotificationRequest} = ocpp_message:new(Version, ~"BootNotificationRequest", #{
+        reason => 'PowerUp', chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
+    }),
+    {ok, BootNotificationResponse} = ocpp_message:new(Version, ~"BootNotificationResponse", #{
+        status => 'Accepted', currentTime => {{2025, 12, 12}, {1, 2, 3}}, interval => 0
+    }),
+    do_call_response(Conn, [{BootNotificationRequest, BootNotificationResponse} | Extra]),
+    disconnect_client(Pid),
+    connect_client(Pid, ['2.0.1']).
+
+unique_message_id() ->
+    integer_to_binary(erlang:unique_integer()).
+
+do_call_response({Pid, StationID, Version}, Messages) ->
+    F = fun() ->
+        lists:foreach(
+            fun
+                ({Request, undefined}) ->
+                    Call = ocpp_rpc:call(Request, unique_message_id()),
+                    ok = ocpp_station:rpc(StationID, ocpp_rpc:encode(Call));
+                ({Request, Response}) ->
+                    Call = ocpp_rpc:call(Request, unique_message_id()),
+                    ok = ocpp_station:rpc(StationID, ocpp_rpc:encode(Call)),
+                    ok = ocpp_station:reply(StationID, ocpp_rpc:id(Call), Response),
+                    {ok, {callresult, _}} = ocpp_rpc:decode(Version, ocpp_client_recv(100), [
+                        {expected, ocpp_message:action(Request)}
+                    ])
+            end,
+            Messages
+        )
+    end,
+    do_client(Pid, F).
 
 -define(testStationID, atom_to_binary(?FUNCTION_NAME)).
 
@@ -327,6 +483,7 @@ teardown_conn({Pid, StationID, _}) ->
     end}
 end).
 
+%% [x]
 %% test behavior of ocpp_station with respect to station initiated
 %% messages.
 provision_station_client_test_() ->
@@ -380,12 +537,17 @@ provision_station_client_test_() ->
                             ocpp_station:reply(
                                 ?testStationID,
                                 <<"1">>,
-                                ocpp_message_2_0_1:boot_notification_response(
-                                    #{
-                                        status => 'Pending',
-                                        interval => 1,
-                                        currentTime => {{2025, 1, 1}, {0, 0, 0}}
-                                    }
+                                element(
+                                    2,
+                                    ocpp_message:new(
+                                        '2.0.1',
+                                        ~"BootNotificationResponse",
+                                        #{
+                                            status => 'Pending',
+                                            interval => 1,
+                                            currentTime => {{2025, 1, 1}, {0, 0, 0}}
+                                        }
+                                    )
                                 )
                             ),
                             ocpp_client_recv(1000)
@@ -400,13 +562,16 @@ provision_station_client_test_() ->
                             ?assertMatch({ok, {callresult, _}}, DecodedRPC),
                             {ok, {callresult, RPCResponse}} = DecodedRPC,
                             ?assertEqual(<<"1">>, ocpp_rpc:id(RPCResponse)),
-                            ExpectedMessage = ocpp_message_2_0_1:boot_notification_response(
-                                #{
-                                    status => 'Pending',
-                                    interval => 1,
-                                    currentTime => {{2025, 1, 1}, {0, 0, 0}}
-                                }
-                            ),
+                            {ok, ExpectedMessage} =
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"BootNotificationResponse",
+                                    #{
+                                        status => 'Pending',
+                                        interval => 1,
+                                        currentTime => {{2025, 1, 1}, {0, 0, 0}}
+                                    }
+                                ),
                             ?assertEqual(ExpectedMessage, ocpp_rpc:payload(RPCResponse))
                         end
                     )
@@ -433,204 +598,270 @@ boot_pending_disallowed_test_() ->
                     %% that should not be (i.e. are normally initiated by the CSMS)
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:authorize_request(
-                                #{idToken => #{idToken => <<"">>, type => 'NoAuthorization'}}
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"AuthorizeRequest",
+                                    #{idToken => #{idToken => <<"">>, type => 'NoAuthorization'}}
+                                )
                             ),
                             <<"auth1">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:cleared_charging_limit_request(#{
-                                chargingLimitSource => 'CSO'
-                            }),
+                            element(
+                                2,
+                                ocpp_message:new('2.0.1', ~"ClearedChargingLimitRequest", #{
+                                    chargingLimitSource => 'CSO'
+                                })
+                            ),
                             <<"clearchglimit">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:data_transfer_request(#{vendorId => <<"bar">>}),
+                            element(
+                                2,
+                                ocpp_message:new('2.0.1', ~"DataTransferRequest", #{
+                                    vendorId => <<"bar">>
+                                })
+                            ),
                             <<"datatx">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:get_15118_ev_certificate_request(
-                                #{
-                                    iso15118SchemaVersion => <<"invalid">>,
-                                    action => 'Install',
-                                    exiRequest => base64:encode("not a valid request")
-                                }
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"Get15118EVCertificateRequest",
+                                    #{
+                                        iso15118SchemaVersion => <<"invalid">>,
+                                        action => 'Install',
+                                        exiRequest => base64:encode("not a valid request")
+                                    }
+                                )
                             ),
                             <<"15118certrequest">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:get_certificate_status_request(
-                                #{
-                                    ocspRequestData =>
-                                        #{
-                                            hashAlgorithm => 'SHA256',
-                                            issuerNameHash =>
-                                                <<
-                                                    "61f91e29ed59e9dee56466cea5e52852"
-                                                    "2cb7e59719f7bb4f7d1e633e1d261611"
-                                                >>,
-                                            issuerKeyHash =>
-                                                <<
-                                                    "61f91e29ed59e9dee56466cea5e528522cb7e"
-                                                    "59719f7bb4f7d1e633e1d261611"
-                                                >>,
-                                            serialNumber => "deadbeef",
-                                            responderURL => <<"https://foo.com/cert">>
-                                        }
-                                }
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"GetCertificateStatusRequest",
+                                    #{
+                                        ocspRequestData =>
+                                            #{
+                                                hashAlgorithm => 'SHA256',
+                                                issuerNameHash =>
+                                                    <<
+                                                        "61f91e29ed59e9dee56466cea5e52852"
+                                                        "2cb7e59719f7bb4f7d1e633e1d261611"
+                                                    >>,
+                                                issuerKeyHash =>
+                                                    <<
+                                                        "61f91e29ed59e9dee56466cea5e528522cb7e"
+                                                        "59719f7bb4f7d1e633e1d261611"
+                                                    >>,
+                                                serialNumber => ~"deadbeef",
+                                                responderURL => <<"https://foo.com/cert">>
+                                            }
+                                    }
+                                )
                             ),
                             <<"certstatus">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:notify_charging_limit_request(
-                                #{chargingLimit => #{chargingLimitSource => 'Other'}}
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"NotifyChargingLimitRequest",
+                                    #{chargingLimit => #{chargingLimitSource => 'Other'}}
+                                )
                             ),
                             <<"chglimit">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:notify_customer_information_request(
-                                #{
-                                    data => <<"foo">>,
-                                    seqNo => 0,
-                                    generatedAt => {{2025, 1, 1}, {12, 12, 12}},
-                                    requestId => 1
-                                }
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"NotifyCustomerInformationRequest",
+                                    #{
+                                        data => <<"foo">>,
+                                        seqNo => 0,
+                                        generatedAt => {{2025, 1, 1}, {12, 12, 12}},
+                                        requestId => 1
+                                    }
+                                )
                             ),
                             <<"custinfo">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:notify_display_messages_request(
-                                #{requestId => 1}
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"NotifyDisplayMessagesRequest",
+                                    #{requestId => 1}
+                                )
                             ),
                             <<"notifydispmsg">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:notify_ev_charging_needs_request(
-                                #{
-                                    evseId => 1,
-                                    chargingNeeds =>
-                                        #{requestedEnergyTransfer => 'DC'}
-                                }
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"NotifyEVChargingNeedsRequest",
+                                    #{
+                                        evseId => 1,
+                                        chargingNeeds =>
+                                            #{requestedEnergyTransfer => 'DC'}
+                                    }
+                                )
                             ),
                             <<"evchgneeds">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:notify_ev_charging_schedule_request(
-                                #{
-                                    timeBase => {{2025, 1, 1}, {18, 12, 12}},
-                                    evseId => 1,
-                                    chargingSchedule =>
-                                        #{
-                                            id => 1,
-                                            chargingRateUnit => 'W',
-                                            chargingSchedulePeriod => [
-                                                #{startPeriod => 0, limit => 123.4}
-                                            ]
-                                        }
-                                }
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"NotifyEVChargingScheduleRequest",
+                                    #{
+                                        timeBase => {{2025, 1, 1}, {18, 12, 12}},
+                                        evseId => 1,
+                                        chargingSchedule =>
+                                            #{
+                                                id => 1,
+                                                chargingRateUnit => 'W',
+                                                chargingSchedulePeriod => [
+                                                    #{startPeriod => 0, limit => 123.4}
+                                                ]
+                                            }
+                                    }
+                                )
                             ),
                             <<"evchgsched">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:notify_event_request(#{
-                                generatedAt => {{2025, 12, 12}, {16, 16, 16}},
-                                seqNo => 0,
-                                eventData => [
-                                    #{
-                                        eventId => 1,
-                                        timestamp => {{2025, 12, 12}, {16, 16, 0}},
-                                        trigger => 'Alerting',
-                                        actualValue => <<"foo">>,
-                                        eventNotificationType => 'CustomMonitor',
-                                        component => #{name => <<"test">>},
-                                        variable => #{name => <<"VarName">>}
-                                    }
-                                ]
-                            }),
+                            element(
+                                2,
+                                ocpp_message:new('2.0.1', ~"NotifyEventRequest", #{
+                                    generatedAt => {{2025, 12, 12}, {16, 16, 16}},
+                                    seqNo => 0,
+                                    eventData => [
+                                        #{
+                                            eventId => 1,
+                                            timestamp => {{2025, 12, 12}, {16, 16, 0}},
+                                            trigger => 'Alerting',
+                                            actualValue => <<"foo">>,
+                                            eventNotificationType => 'CustomMonitor',
+                                            component => #{name => <<"test">>},
+                                            variable => #{name => <<"VarName">>}
+                                        }
+                                    ]
+                                })
+                            ),
                             <<"notifyevent">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:notify_monitoring_report_request(#{
-                                requestId => 1,
-                                seqNo => 0,
-                                generatedAt => {{2025, 1, 12}, {10, 14, 12}}
-                            }),
+                            element(
+                                2,
+                                ocpp_message:new('2.0.1', ~"NotifyMonitoringReportRequest", #{
+                                    requestId => 1,
+                                    seqNo => 0,
+                                    generatedAt => {{2025, 1, 12}, {10, 14, 12}}
+                                })
+                            ),
                             <<"notifymon">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:notify_report_request(#{
-                                requestId => 1,
-                                generatedAt => {{2025, 1, 1}, {23, 12, 12}},
-                                seqNo => 0
-                            }),
+                            element(
+                                2,
+                                ocpp_message:new('2.0.1', ~"NotifyReportRequest", #{
+                                    requestId => 1,
+                                    generatedAt => {{2025, 1, 1}, {23, 12, 12}},
+                                    seqNo => 0
+                                })
+                            ),
                             <<"norifyreport">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:report_charging_profiles_request(#{
-                                requestId => 1,
-                                chargingLimitSource => 'CSO',
-                                evseId => 0,
-                                chargingProfile => [
-                                    #{
-                                        id => 1,
-                                        stackLevel => 0,
-                                        chargingProfilePurpose => 'TxProfile',
-                                        chargingProfileKind => 'Absolute',
-                                        chargingSchedule => [
-                                            #{
-                                                id => 1,
-                                                chargingRateUnit => 'A',
-                                                chargingSchedulePeriod => [
-                                                    #{startPeriod => 0, limit => 25.6}
-                                                ]
-                                            }
-                                        ]
-                                    }
-                                ]
-                            }),
+                            element(
+                                2,
+                                ocpp_message:new('2.0.1', ~"ReportChargingProfilesRequest", #{
+                                    requestId => 1,
+                                    chargingLimitSource => 'CSO',
+                                    evseId => 0,
+                                    chargingProfile => [
+                                        #{
+                                            id => 1,
+                                            stackLevel => 0,
+                                            chargingProfilePurpose => 'TxProfile',
+                                            chargingProfileKind => 'Absolute',
+                                            chargingSchedule => [
+                                                #{
+                                                    id => 1,
+                                                    chargingRateUnit => 'A',
+                                                    chargingSchedulePeriod => [
+                                                        #{startPeriod => 0, limit => 25.6}
+                                                    ]
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                })
+                            ),
                             <<"reportchgprof">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:reservation_status_update_request(#{
-                                reservationId => 1, reservationUpdateStatus => 'Expired'
-                            }),
+                            element(
+                                2,
+                                ocpp_message:new('2.0.1', ~"ReservationStatusUpdateRequest", #{
+                                    reservationId => 1, reservationUpdateStatus => 'Expired'
+                                })
+                            ),
                             <<"resvstatus">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:security_event_notification_request(#{
-                                type => <<"InvalidFirmwareSigningCertificate">>,
-                                timestamp => {{2025, 1, 2}, {1, 2, 3}}
-                            }),
+                            element(
+                                2,
+                                ocpp_message:new('2.0.1', ~"SecurityEventNotificationRequest", #{
+                                    type => <<"InvalidFirmwareSigningCertificate">>,
+                                    timestamp => {{2025, 1, 2}, {1, 2, 3}}
+                                })
+                            ),
                             <<"secevent">>
                         )
                     ),
@@ -641,104 +872,137 @@ boot_pending_disallowed_test_() ->
                     %% allowed after they have been solicited.
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:firmware_status_notification_request(#{
-                                status => 'Downloaded'
-                            }),
+                            element(
+                                2,
+                                ocpp_message:new('2.0.1', ~"FirmwareStatusNotificationRequest", #{
+                                    status => 'Downloaded'
+                                })
+                            ),
                             <<"fwstatus">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:heartbeat_request(#{}),
+                            element(2, ocpp_message:new('2.0.1', ~"HeartbeatRequest", #{})),
                             <<"hb1">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:log_status_notification_request(
-                                #{status => 'BadMessage'}
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"LogStatusNotificationRequest",
+                                    #{status => 'BadMessage'}
+                                )
                             ),
                             <<"logstatus">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:meter_values_request(
-                                #{
-                                    evseId => 1,
-                                    meterValue => [
-                                        #{
-                                            timestamp => {{2025, 1, 1}, {0, 0, 0}},
-                                            sampledValue => [#{value => 1.0}]
-                                        }
-                                    ]
-                                }
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"MeterValuesRequest",
+                                    #{
+                                        evseId => 1,
+                                        meterValue => [
+                                            #{
+                                                timestamp => {{2025, 1, 1}, {0, 0, 0}},
+                                                sampledValue => [#{value => 1.0}]
+                                            }
+                                        ]
+                                    }
+                                )
                             ),
                             <<"metervals">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:sign_certificate_request(
-                                #{
-                                    csr => <<
-                                        "-----BEGIN CERTIFICATE REQUEST-----\n"
-                                        "MIIDGDCCAgACAQAwgakxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpDYWxpZm9ybmlh\n"
-                                        "MRYwFAYDVQQHEw1Nb3VudGFpbiBWaWV3MRYwFAYDVQQKEw1Hb29nbGUsIEluYy4g\n"
-                                        "MRcwFQYDVQQLEw5JVCBEZXB0YXJ0bWVudDEXMBUGA1UEAxMOd3d3Lmdvb2dsZS5j\n"
-                                        "b20xIzAhBgkqhkiG9w0BCQEWFHdlYm1hc3RlckBnb29nbGUuY29tMIIBIjANBgkq\n"
-                                        "hkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq3NT5DBBDql5gTB4/6Zsq/C1iwO4yBD2\n"
-                                        "nThaNfO1qHKUjnFz0oua+54x97TjmHItRH5H+jPJvmzzb4TUJ274CRFhquOOMZVM\n"
-                                        "dVIG9FUjogJstMqv4GtBC4C/ype0ilAcPEBjRi9bFiR/g43qPCnlRAJNo4cJko7n\n"
-                                        "W7erAJsRPNiQMr5UJN9h3GuQMPw6uaI/0OWuWjSTLzEBMujHhPySgZIv1SurVXDz\n"
-                                        "iFC6S6qvc9XQ1z6tkmrttdoOfDI+eT75QxysHmctgAvkZaFEoRASqcqf3iYyl9Qw\n"
-                                        "mh0xuLSoR9HTvaD9DhxAIa4/1+l6D9MGb/01+lip7AjqdnTTzSBfcQIDAQABoCkw\n"
-                                        "JwYJKoZIhvcNAQkOMRowGDAJBgNVHRMEAjAAMAsGA1UdDwQEAwIF4DANBgkqhkiG\n"
-                                        "9w0BAQsFAAOCAQEAZyMkFtElkS3vQoCPVHevrFcPgrx/Fqx0UdQdnf2RyoJ3jqiU\n"
-                                        "yPo5+5BHA9kY0TuJLhgMIq0QWAbzZYNL0+J8UUcx8EvMK6DqPpKteyYFCMw6GEzu\n"
-                                        "diq4RE/8Ea9UpGbw8GH1oEsUksBTwrs06OSOVgDXkJ1XY4VaRkMPflgQWGULgKYO\n"
-                                        "2P/zcFowENruGLJO7ynyUkm5idKdYzDqk7c7bqyLywOEPxSRKVyblmzqiFCOlCqp\n"
-                                        "HozZ9+5TmrMPD/hO1uHVECcL08RMGXoGMajojI8CE+cmkaWLq3PZt08Sv0F/Itop\n"
-                                        "O8XAZ2bYTK4HQfPm+Fud22SD+DkSwt8vN8Lu2g==\n"
-                                        "-----END CERTIFICATE REQUEST-----\n"
-                                    >>
-                                }
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"SignCertificateRequest",
+                                    #{
+                                        csr => <<
+                                            "-----BEGIN CERTIFICATE REQUEST-----\n"
+                                            "MIIDGDCCAgACAQAwgakxCzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpDYWxpZm9ybmlh\n"
+                                            "MRYwFAYDVQQHEw1Nb3VudGFpbiBWaWV3MRYwFAYDVQQKEw1Hb29nbGUsIEluYy4g\n"
+                                            "MRcwFQYDVQQLEw5JVCBEZXB0YXJ0bWVudDEXMBUGA1UEAxMOd3d3Lmdvb2dsZS5j\n"
+                                            "b20xIzAhBgkqhkiG9w0BCQEWFHdlYm1hc3RlckBnb29nbGUuY29tMIIBIjANBgkq\n"
+                                            "hkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq3NT5DBBDql5gTB4/6Zsq/C1iwO4yBD2\n"
+                                            "nThaNfO1qHKUjnFz0oua+54x97TjmHItRH5H+jPJvmzzb4TUJ274CRFhquOOMZVM\n"
+                                            "dVIG9FUjogJstMqv4GtBC4C/ype0ilAcPEBjRi9bFiR/g43qPCnlRAJNo4cJko7n\n"
+                                            "W7erAJsRPNiQMr5UJN9h3GuQMPw6uaI/0OWuWjSTLzEBMujHhPySgZIv1SurVXDz\n"
+                                            "iFC6S6qvc9XQ1z6tkmrttdoOfDI+eT75QxysHmctgAvkZaFEoRASqcqf3iYyl9Qw\n"
+                                            "mh0xuLSoR9HTvaD9DhxAIa4/1+l6D9MGb/01+lip7AjqdnTTzSBfcQIDAQABoCkw\n"
+                                            "JwYJKoZIhvcNAQkOMRowGDAJBgNVHRMEAjAAMAsGA1UdDwQEAwIF4DANBgkqhkiG\n"
+                                            "9w0BAQsFAAOCAQEAZyMkFtElkS3vQoCPVHevrFcPgrx/Fqx0UdQdnf2RyoJ3jqiU\n"
+                                            "yPo5+5BHA9kY0TuJLhgMIq0QWAbzZYNL0+J8UUcx8EvMK6DqPpKteyYFCMw6GEzu\n"
+                                            "diq4RE/8Ea9UpGbw8GH1oEsUksBTwrs06OSOVgDXkJ1XY4VaRkMPflgQWGULgKYO\n"
+                                            "2P/zcFowENruGLJO7ynyUkm5idKdYzDqk7c7bqyLywOEPxSRKVyblmzqiFCOlCqp\n"
+                                            "HozZ9+5TmrMPD/hO1uHVECcL08RMGXoGMajojI8CE+cmkaWLq3PZt08Sv0F/Itop\n"
+                                            "O8XAZ2bYTK4HQfPm+Fud22SD+DkSwt8vN8Lu2g==\n"
+                                            "-----END CERTIFICATE REQUEST-----\n"
+                                        >>
+                                    }
+                                )
                             ),
                             <<"signcert">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:status_notification_request(
-                                #{
-                                    timestamp => {{2025, 1, 1}, {1, 1, 1}},
-                                    evseId => 1,
-                                    connectorId => 1,
-                                    connectorStatus => 'Available'
-                                }
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"StatusNotificationRequest",
+                                    #{
+                                        timestamp => {{2025, 1, 1}, {1, 1, 1}},
+                                        evseId => 1,
+                                        connectorId => 1,
+                                        connectorStatus => 'Available'
+                                    }
+                                )
                             ),
                             <<"staus">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:transaction_event_request(
-                                #{
-                                    eventType => 'Started',
-                                    timestamp => {{2025, 1, 1}, {12, 12, 12}},
-                                    triggerReason => 'CablePluggedIn',
-                                    seqNo => 0,
-                                    transactionInfo =>
-                                        #{transactionId => <<"tx1">>}
-                                }
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"TransactionEventRequest",
+                                    #{
+                                        eventType => 'Started',
+                                        timestamp => {{2025, 1, 1}, {12, 12, 12}},
+                                        triggerReason => 'CablePluggedIn',
+                                        seqNo => 0,
+                                        transactionInfo =>
+                                            #{transactionId => <<"tx1">>}
+                                    }
+                                )
                             ),
                             <<"txevent">>
                         )
                     ),
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:publish_firmware_status_notification_request(
-                                #{status => 'Idle'}
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"PublishFirmwareStatusNotificationRequest",
+                                    #{status => 'Idle'}
+                                )
                             ),
                             <<"pubfwstatus">>
                         )
@@ -748,24 +1012,29 @@ boot_pending_disallowed_test_() ->
                     %% result in a NotSupportedError (instead of a SecurityError).
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:delete_certificate_request(
-                                #{
-                                    certificateHashData =>
-                                        #{
-                                            hashAlgorithm => 'SHA256',
-                                            issuerNameHash =>
-                                                <<
-                                                    "61f91e29ed59e9dee56466cea5e52852"
-                                                    "2cb7e59719f7bb4f7d1e633e1d261611"
-                                                >>,
-                                            issuerKeyHash =>
-                                                <<
-                                                    "61f91e29ed59e9dee56466cea5e528522cb7e"
-                                                    "59719f7bb4f7d1e633e1d261611"
-                                                >>,
-                                            serialNumber => <<"deadbeef">>
-                                        }
-                                }
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"DeleteCertificateRequest",
+                                    #{
+                                        certificateHashData =>
+                                            #{
+                                                hashAlgorithm => 'SHA256',
+                                                issuerNameHash =>
+                                                    <<
+                                                        "61f91e29ed59e9dee56466cea5e52852"
+                                                        "2cb7e59719f7bb4f7d1e633e1d261611"
+                                                    >>,
+                                                issuerKeyHash =>
+                                                    <<
+                                                        "61f91e29ed59e9dee56466cea5e528522cb7e"
+                                                        "59719f7bb4f7d1e633e1d261611"
+                                                    >>,
+                                                serialNumber => <<"deadbeef">>
+                                            }
+                                    }
+                                )
                             ),
                             <<"delcert">>
                         )
@@ -778,8 +1047,13 @@ boot_pending_disallowed_test_() ->
                     %% message from the station.
                     pending_disallowed(
                         ocpp_rpc:call(
-                            ocpp_message_2_0_1:get_base_report_request(
-                                #{requestId => 1, reportBase => 'FullInventory'}
+                            element(
+                                2,
+                                ocpp_message:new(
+                                    '2.0.1',
+                                    ~"GetBaseReportRequest",
+                                    #{requestId => 1, reportBase => 'FullInventory'}
+                                )
                             ),
                             <<"basereport">>
                         )
@@ -795,46 +1069,79 @@ boot_pending_trigger_message_test_() ->
                     ?withStationX(
                         [
                             pending_trigger(
-                                ocpp_message_2_0_1:trigger_message_request(
-                                    #{requestedMessage => 'BootNotification'}
+                                element(
+                                    2,
+                                    ocpp_message:new(
+                                        '2.0.1',
+                                        ~"TriggerMessageRequest",
+                                        #{requestedMessage => 'BootNotification'}
+                                    )
                                 ),
-                                ocpp_message_2_0_1:boot_notification_request(#{
-                                    reason => 'Triggered',
-                                    chargingStation => #{
-                                        model => <<"foo">>, vendorName => <<"bar">>
-                                    }
-                                }),
-                                ocpp_message_2_0_1:boot_notification_response(#{
-                                    status => 'Pending',
-                                    interval => 0,
-                                    currentTime => {{2025, 12, 12}, {3, 2, 1}}
-                                })
-                            ),
-                            pending_trigger(
-                                ocpp_message_2_0_1:trigger_message_request(
-                                    #{requestedMessage => 'Heartbeat'}
+                                element(
+                                    2,
+                                    ocpp_message:new('2.0.1', ~"BootNotificationRequest", #{
+                                        reason => 'Triggered',
+                                        chargingStation => #{
+                                            model => <<"foo">>, vendorName => <<"bar">>
+                                        }
+                                    })
                                 ),
-                                ocpp_message_2_0_1:heartbeat_request(#{}),
-                                ocpp_message_2_0_1:heartbeat_response(
-                                    #{currentTime => {{2025, 12, 12}, {1, 1, 1}}}
+                                element(
+                                    2,
+                                    ocpp_message:new('2.0.1', ~"BootNotificationResponse", #{
+                                        status => 'Pending',
+                                        interval => 0,
+                                        currentTime => {{2025, 12, 12}, {3, 2, 1}}
+                                    })
                                 )
                             ),
                             pending_trigger(
-                                ocpp_message_2_0_1:trigger_message_request(
-                                    #{
-                                        requestedMessage => 'StatusNotification',
-                                        evse => #{id => 1, connectorId => 1}
-                                    }
+                                element(
+                                    2,
+                                    ocpp_message:new(
+                                        '2.0.1',
+                                        ~"TriggerMessageRequest",
+                                        #{requestedMessage => 'Heartbeat'}
+                                    )
                                 ),
-                                ocpp_message_2_0_1:status_notification_request(
-                                    #{
-                                        timestamp => {{2025, 1, 1}, {1, 1, 1}},
-                                        evseId => 1,
-                                        connectorId => 1,
-                                        connectorStatus => 'Available'
-                                    }
+                                element(2, ocpp_message:new('2.0.1', ~"HeartbeatRequest", #{})),
+                                element(
+                                    2,
+                                    ocpp_message:new(
+                                        '2.0.1',
+                                        ~"HeartbeatResponse",
+                                        #{currentTime => {{2025, 12, 12}, {1, 1, 1}}}
+                                    )
+                                )
+                            ),
+                            pending_trigger(
+                                element(
+                                    2,
+                                    ocpp_message:new(
+                                        '2.0.1',
+                                        ~"TriggerMessageRequest",
+                                        #{
+                                            requestedMessage => 'StatusNotification',
+                                            evse => #{id => 1, connectorId => 1}
+                                        }
+                                    )
                                 ),
-                                ocpp_message_2_0_1:status_notification_response(#{})
+                                element(
+                                    2,
+                                    ocpp_message:new(
+                                        '2.0.1',
+                                        ~"StatusNotificationRequest",
+                                        #{
+                                            timestamp => {{2025, 1, 1}, {1, 1, 1}},
+                                            evseId => 1,
+                                            connectorId => 1,
+                                            connectorStatus => 'Available'
+                                        }
+                                    )
+                                ),
+                                element(
+                                    2, ocpp_message:new('2.0.1', ~"StatusNotificationResponse", #{})
+                                )
                             )
                             %% TODO add the rest of the triggerable messages
                             %% TODO add test for attempt to send a response to a message
@@ -858,20 +1165,27 @@ pending_triggered_rejected(StationID) ->
         {"A triggered message that was rejected should be dissallowed from a station in the pending state",
             fun() ->
                 MsgID = integer_to_binary(erlang:unique_integer()),
-                TriggerMessageRequest = ocpp_message_2_0_1:trigger_message_request(
-                    #{requestedMessage => 'Heartbeat'}
-                ),
+                {ok, TriggerMessageRequest} =
+                    ocpp_message:new(
+                        '2.0.1',
+                        ~"TriggerMessageRequest",
+                        #{requestedMessage => 'Heartbeat'}
+                    ),
                 ok = ocpp_station:call(StationID, MsgID, TriggerMessageRequest),
                 {ok, {call, TriggerCall}} = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), []),
                 ?assertEqual(TriggerMessageRequest, ocpp_rpc:payload(TriggerCall)),
-                TriggerMessageResponse = ocpp_message_2_0_1:trigger_message_response(
-                    #{status => 'Rejected'}
-                ),
+                {ok, TriggerMessageResponse} =
+                    ocpp_message:new(
+                        '2.0.1',
+                        ~"TriggerMessageResponse",
+                        #{status => 'Rejected'}
+                    ),
                 ok = ocpp_station:rpc(
                     StationID, ocpp_rpc:encode(ocpp_rpc:callresult(TriggerMessageResponse, MsgID))
                 ),
                 HBID = integer_to_binary(erlang:unique_integer()),
-                HeartbeatRequest = ocpp_message_2_0_1:heartbeat_request(#{}),
+                {ok, HeartbeatRequest} =
+                    ocpp_message:new('2.0.1', ~"HeartbeatRequest", #{}),
                 ocpp_station:rpc(StationID, ocpp_rpc:encode(ocpp_rpc:call(HeartbeatRequest, HBID))),
                 HBResult = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), [
                     {expected, <<"Heartbeat">>}
@@ -901,24 +1215,32 @@ pending_triggered_duplicate(StationID) ->
         {"A triggered message that was accepted should be allowed only once a station in the pending state",
             fun() ->
                 MsgID = integer_to_binary(erlang:unique_integer()),
-                TriggerMessageRequest = ocpp_message_2_0_1:trigger_message_request(
-                    #{requestedMessage => 'Heartbeat'}
-                ),
+                {ok, TriggerMessageRequest} =
+                    ocpp_message:new(
+                        '2.0.1',
+                        ~"TriggerMessageRequest",
+                        #{requestedMessage => 'Heartbeat'}
+                    ),
                 ok = ocpp_station:call(StationID, MsgID, TriggerMessageRequest),
                 {ok, {call, TriggerCall}} = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), []),
                 ?assertEqual(TriggerMessageRequest, ocpp_rpc:payload(TriggerCall)),
-                TriggerMessageResponse = ocpp_message_2_0_1:trigger_message_response(
-                    #{status => 'Accepted'}
-                ),
+                {ok, TriggerMessageResponse} =
+                    ocpp_message:new(
+                        '2.0.1',
+                        ~"TriggerMessageResponse",
+                        #{status => 'Accepted'}
+                    ),
                 ok = ocpp_station:rpc(
                     StationID, ocpp_rpc:encode(ocpp_rpc:callresult(TriggerMessageResponse, MsgID))
                 ),
                 HBID = integer_to_binary(erlang:unique_integer()),
-                HeartbeatRequest = ocpp_message_2_0_1:heartbeat_request(#{}),
+                {ok, HeartbeatRequest} =
+                    ocpp_message:new('2.0.1', ~"HeartbeatRequest", #{}),
                 ocpp_station:rpc(StationID, ocpp_rpc:encode(ocpp_rpc:call(HeartbeatRequest, HBID))),
-                HeartbeatResponse = ocpp_message_2_0_1:heartbeat_response(#{
-                    currentTime => {{2025, 1, 1}, {0, 0, 0}}
-                }),
+                {ok, HeartbeatResponse} =
+                    ocpp_message:new('2.0.1', ~"HeartbeatResponse", #{
+                        currentTime => {{2025, 1, 1}, {0, 0, 0}}
+                    }),
                 ok = ocpp_station:reply(StationID, HBID, HeartbeatResponse),
                 HBResult = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), [
                     {expected, <<"Heartbeat">>}
@@ -957,13 +1279,16 @@ untriggered_boot_normal() ->
                     MsgID = integer_to_binary(erlang:unique_integer()),
                     BootNotificationRequest = default_boot_notification_request(MsgID),
                     ok = ocpp_station:rpc(StationID, BootNotificationRequest),
-                    BootNotificationResponse = ocpp_message_2_0_1:boot_notification_response(
-                        #{
-                            status => 'Accepted',
-                            interval => 0,
-                            currentTime => {{2025, 1, 1}, {1, 2, 4}}
-                        }
-                    ),
+                    {ok, BootNotificationResponse} =
+                        ocpp_message:new(
+                            '2.0.1',
+                            ~"BootNotificationResponse",
+                            #{
+                                status => 'Accepted',
+                                interval => 0,
+                                currentTime => {{2025, 1, 1}, {1, 2, 4}}
+                            }
+                        ),
                     ok = ocpp_station:reply(StationID, MsgID, BootNotificationResponse),
                     Response = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), [
                         {expected, <<"BootNotification">>}
@@ -977,12 +1302,16 @@ untriggered_boot_normal() ->
                     ok = ocpp_station:rpc(
                         StationID,
                         ocpp_rpc:encode(
-                            ocpp_rpc:call(ocpp_message_2_0_1:heartbeat_request(#{}), HBID)
+                            ocpp_rpc:call(
+                                element(2, ocpp_message:new('2.0.1', ~"HeartbeatRequest", #{})),
+                                HBID
+                            )
                         )
                     ),
-                    HB = ocpp_message_2_0_1:heartbeat_response(#{
-                        currentTime => {{2025, 1, 1}, {1, 3, 0}}
-                    }),
+                    {ok, HB} =
+                        ocpp_message:new('2.0.1', ~"HeartbeatResponse", #{
+                            currentTime => {{2025, 1, 1}, {1, 3, 0}}
+                        }),
                     ok = ocpp_station:reply(StationID, HBID, HB),
                     HBResponse = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), [
                         {expected, <<"Heartbeat">>}
@@ -1002,21 +1331,27 @@ untriggered_boot_racing() ->
                 fun() ->
                     BootID = integer_to_binary(erlang:unique_integer()),
                     TriggerID = integer_to_binary(erlang:unique_integer()),
-                    TriggerMessageRequest = ocpp_message_2_0_1:trigger_message_request(
-                        #{requestedMessage => 'BootNotification'}
-                    ),
+                    {ok, TriggerMessageRequest} =
+                        ocpp_message:new(
+                            '2.0.1',
+                            ~"TriggerMessageRequest",
+                            #{requestedMessage => 'BootNotification'}
+                        ),
                     ok = ocpp_station:call(StationID, TriggerID, TriggerMessageRequest),
                     TriggerMessageReceived = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), []),
                     ?assertMatch({ok, {call, _}}, TriggerMessageReceived),
                     {ok, {call, TriggeredRPC}} = TriggerMessageReceived,
                     ?assertEqual(TriggerID, ocpp_rpc:id(TriggeredRPC)),
                     ?assertEqual(TriggerMessageRequest, ocpp_rpc:payload(TriggeredRPC)),
-                    BootNotificationRequest = ocpp_message_2_0_1:boot_notification_request(
-                        #{
-                            reason => 'PowerUp',
-                            chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
-                        }
-                    ),
+                    {ok, BootNotificationRequest} =
+                        ocpp_message:new(
+                            '2.0.1',
+                            ~"BootNotificationRequest",
+                            #{
+                                reason => 'PowerUp',
+                                chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
+                            }
+                        ),
                     ok = ocpp_station:rpc(
                         StationID, ocpp_rpc:encode(ocpp_rpc:call(BootNotificationRequest, BootID))
                     ),
@@ -1035,13 +1370,16 @@ untriggered_boot_racing() ->
                     %%      constraints so the CSMS should be as flexible as
                     %%      possible---i.e. don't block waiting for the trigger message
                     %%      request to time out).
-                    BootNotificationResponse = ocpp_message_2_0_1:boot_notification_response(
-                        #{
-                            status => 'Accepted',
-                            currentTime => {{2025, 1, 1}, {2, 2, 2}},
-                            interval => 0
-                        }
-                    ),
+                    {ok, BootNotificationResponse} =
+                        ocpp_message:new(
+                            '2.0.1',
+                            ~"BootNotificationResponse",
+                            #{
+                                status => 'Accepted',
+                                currentTime => {{2025, 1, 1}, {2, 2, 2}},
+                                interval => 0
+                            }
+                        ),
                     ok = ocpp_station:reply(StationID, BootID, BootNotificationResponse),
                     BootResponse = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), [
                         {expected, <<"BootNotification">>}
@@ -1054,7 +1392,12 @@ untriggered_boot_racing() ->
                         StationID,
                         ocpp_rpc:encode(
                             ocpp_rpc:callresult(
-                                ocpp_message_2_0_1:trigger_message_response(#{status => 'Rejected'}),
+                                element(
+                                    2,
+                                    ocpp_message:new('2.0.1', ~"TriggerMessageResponse", #{
+                                        status => 'Rejected'
+                                    })
+                                ),
                                 TriggerID
                             )
                         )
@@ -1068,13 +1411,16 @@ boot_to_pending(StationID) ->
         StationID,
         default_boot_notification_request(<<"1">>)
     ),
-    BootNotificationResponse = ocpp_message_2_0_1:boot_notification_response(
-        #{
-            status => 'Pending',
-            interval => 0,
-            currentTime => {{2025, 1, 1}, {1, 2, 3}}
-        }
-    ),
+    {ok, BootNotificationResponse} =
+        ocpp_message:new(
+            '2.0.1',
+            ~"BootNotificationResponse",
+            #{
+                status => 'Pending',
+                interval => 0,
+                currentTime => {{2025, 1, 1}, {1, 2, 3}}
+            }
+        ),
     ocpp_station:reply(
         StationID,
         <<"1">>,
@@ -1108,7 +1454,12 @@ pending_trigger(TriggerMessageRequest, Message, Response) ->
                         StationID,
                         ocpp_rpc:encode(
                             ocpp_rpc:callresult(
-                                ocpp_message_2_0_1:trigger_message_response(#{status => 'Accepted'}),
+                                element(
+                                    2,
+                                    ocpp_message:new('2.0.1', ~"TriggerMessageResponse", #{
+                                        status => 'Accepted'
+                                    })
+                                ),
                                 MsgID
                             )
                         )
@@ -1167,13 +1518,16 @@ duplicate_boot_notification_request(StationID) ->
             ocpp_station:rpc(StationID, default_boot_notification_request(<<"1">>))
         ),
         %% previous message is processed normally
-        BootNotificationResponse = ocpp_message_2_0_1:boot_notification_response(
-            #{
-                status => 'Accepted',
-                interval => 1,
-                currentTime => {{2025, 1, 1}, {0, 0, 1}}
-            }
-        ),
+        {ok, BootNotificationResponse} =
+            ocpp_message:new(
+                '2.0.1',
+                ~"BootNotificationResponse",
+                #{
+                    status => 'Accepted',
+                    interval => 1,
+                    currentTime => {{2025, 1, 1}, {0, 0, 1}}
+                }
+            ),
         ocpp_station:reply(
             StationID,
             <<"1">>,
@@ -1213,16 +1567,21 @@ client_boot_retry(StationID) ->
                 default_boot_notification_request(<<"2">>)
             ),
             %% "delayed" response to timed out boot notification request
-            ocpp_station:reply(
-                StationID,
-                <<"1">>,
-                ocpp_message_2_0_1:boot_notification_response(
+            {ok, Resp} =
+                ocpp_message:new(
+                    '2.0.1',
+                    ~"BootNotificationResponse",
                     #{
                         status => 'Accepted',
                         interval => 1,
                         currentTime => {{2025, 1, 1}, {0, 0, 0}}
                     }
-                )
+                ),
+
+            ocpp_station:reply(
+                StationID,
+                <<"1">>,
+                Resp
             ),
             %% Make sure the station is still not provisioned
             ?assertEqual(
@@ -1232,13 +1591,16 @@ client_boot_retry(StationID) ->
                     ~B<[2,"3","Heartbeat",{}]>
                 )
             ),
-            BootNotificationResponse = ocpp_message_2_0_1:boot_notification_response(
-                #{
-                    status => 'Accepted',
-                    interval => 1,
-                    currentTime => {{2025, 1, 1}, {0, 0, 1}}
-                }
-            ),
+            {ok, BootNotificationResponse} =
+                ocpp_message:new(
+                    '2.0.1',
+                    ~"BootNotificationResponse",
+                    #{
+                        status => 'Accepted',
+                        interval => 1,
+                        currentTime => {{2025, 1, 1}, {0, 0, 1}}
+                    }
+                ),
             ocpp_station:reply(
                 StationID,
                 <<"2">>,
@@ -1284,21 +1646,27 @@ call_rejected_station() ->
             {ok, '2.0.1'} = ocpp_station:connect(StationID, ['2.0.1']),
             BootNotificationRequest = ocpp_rpc:encode(
                 ocpp_rpc:call(
-                    ocpp_message_2_0_1:boot_notification_request(#{
-                        reason => 'PowerUp',
-                        chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
-                    }),
+                    element(
+                        2,
+                        ocpp_message:new('2.0.1', ~"BootNotificationRequest", #{
+                            reason => 'PowerUp',
+                            chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
+                        })
+                    ),
                     <<"RejectMe">>
                 )
             ),
             ok = ocpp_station:rpc(StationID, BootNotificationRequest),
-            Response = ocpp_message_2_0_1:boot_notification_response(
-                #{
-                    status => 'Rejected',
-                    currentTime => {{2025, 1, 1}, {12, 3, 4}},
-                    interval => 0
-                }
-            ),
+            {ok, Response} =
+                ocpp_message:new(
+                    '2.0.1',
+                    ~"BootNotificationResponse",
+                    #{
+                        status => 'Rejected',
+                        currentTime => {{2025, 1, 1}, {12, 3, 4}},
+                        interval => 0
+                    }
+                ),
             ok = ocpp_station:reply(StationID, <<"RejectMe">>, Response),
             BootNotificationResponse = ocpp_rpc:decode('2.0.1', ocpp_client_recv(100), [
                 {expected, <<"BootNotification">>}
@@ -1308,12 +1676,15 @@ call_rejected_station() ->
                 BootNotificationResponse
             ),
             %% station remains connected, but is compliant and does not send messages
-            AttemptedMsg = ocpp_message_2_0_1:get_base_report_request(
-                #{
-                    requestId => 1,
-                    reportBase => 'FullInventory'
-                }
-            ),
+            {ok, AttemptedMsg} =
+                ocpp_message:new(
+                    '2.0.1',
+                    ~"GetBaseReportRequest",
+                    #{
+                        requestId => 1,
+                        reportBase => 'FullInventory'
+                    }
+                ),
             ?assertEqual(
                 {error, not_provisioned},
                 ocpp_station:call(StationID, <<"IllegalCall">>, AttemptedMsg)
@@ -1321,6 +1692,109 @@ call_rejected_station() ->
             ?assertError(timeout, ocpp_client_recv(100))
         end}
     end}.
+
+%% unexpected_rpc_test_() ->
+%%     {setup, fun setup_deps/0, fun teardown_deps/1,
+%%         ?mockStationManager(
+%%             ?withStationX(
+%%                 [
+%%                     unexpected_callresult(Version, State)
+%%                  || State <- [
+%%                         connected, provisioning, pending, accepted, offline, reconnecting, rejected
+%%                     ],
+%%                     Version <- ['1.6', '2.0.1', '2.1']
+%%                 ]
+%%             )
+%%         )}.
+
+%% bad_callresult_payload_test_() ->
+%%     {setup, fun setup_deps/0, fun teardown_deps/1,
+%%         ?mockStationManager(
+%%             ?withStationX(
+%%                 [wrong_callresult_payload(State) || State <- [pending, accepted, reconnecting]]
+%%             )
+%%         )}.
+
+unexpected_callresult(Version, State) ->
+    TestID = atom_to_binary(?FUNCTION_NAME),
+    StateID = atom_to_binary(State),
+    {<<TestID/binary, "_", StateID/binary>>, fun(StationID, _) ->
+        {setup, fun() -> boot_to(StationID, State) end, fun teardown_conn/1, fun(
+            {Pid, _, _Version}
+        ) ->
+            {
+                "(" ++ atom_to_list(Version) ++
+                    ") unexpected CALLRESULT in state '" ++ binary_to_list(StateID) ++ "'",
+                fun() ->
+                    {ok, Message} = ocpp_message:new(Version, ~"CancelReservationResponse", #{
+                        status => 'Accepted'
+                    }),
+                    RPC = ocpp_rpc:callresult(Message, unique_message_id()),
+                    F = fun() -> ocpp_station:rpc(StationID, ocpp_rpc:encode(RPC)) end,
+                    case do_client(Pid, F) of
+                        Result when
+                            State =:= connected;
+                            State =:= rejected
+                        ->
+                            ?assertEqual({error, not_provisioned}, Result);
+                        Result when State =:= offline ->
+                            ?assertEqual({error, not_connected}, Result);
+                        Result when
+                            Version =:= '2.1',
+                            (State =:= accepted) orelse
+                                (State =:= reconnecting) orelse
+                                (State =:= provisioning) orelse
+                                (State =:= pending)
+                        ->
+                            ?assertEqual(ok, Result),
+                            ok = ocpp_station:callresulterror(
+                                StationID, ocpp_rpc:id(RPC), 'InternalError', [
+                                    {description, <<"Unknown message ID">>},
+                                    {data, {}}
+                                ]
+                            ),
+                            RecvFun = fun() -> ocpp_client_recv(100) end,
+                            RecvResult = do_client(Pid, RecvFun),
+                            ?assertMatch({rpcsend, _}, RecvResult),
+                            {rpcsend, Bin} = RecvResult,
+                            Decoded = ocpp_rpc:decode('2.1', Bin, []),
+                            ?assertMatch({ok, {callresulterror, _}}, Decoded),
+                            {ok, {callresulterror, CallResultError}} = Decoded,
+                            ?assertEqual(ocpp_rpc:id(RPC), ocpp_rpc:id(CallResultError)),
+                            ?assertEqual('InternalError', ocpp_rpc:error_code(CallResultError));
+                        Result when
+                            State =:= accepted;
+                            State =:= reconnecting;
+                            State =:= provisioning;
+                            State =:= pending
+                        ->
+                            %% TODO verify that no rpcsend message is received.
+                            ?assertEqual(ok, Result),
+                            ?assertEqual(
+                                {error, cannot_send},
+                                ocpp_station:callresulterror(
+                                    StationID, ocpp_rpc:id(RPC), 'InternalError', [
+                                        {description, <<"Unknown message ID">>},
+                                        {data, #{}}
+                                    ]
+                                )
+                            ),
+                            TimeoutFun = fun() ->
+                                try
+                                    ocpp_client_recv(50)
+                                catch
+                                    error:timeout -> timeout
+                                end
+                            end,
+                            ?assertEqual(timeout, do_client(Pid, TimeoutFun))
+                    end
+                end
+            }
+        end}
+    end}.
+
+wrong_callresult_payload(State) ->
+    {<<"asdf">>, fun(_, _) -> fun() -> ?assert(false) end end}.
 
 %% TODO Things to test:
 
@@ -1348,9 +1822,9 @@ call_rejected_station() ->
 %%        this generalizes to sending any message to the station before a
 %%        BootNotificationResponse has been sent with status Accepted or Pending
 
-%% 6. If the station rejects the TriggerMessageRequest, then the requested message
-%%    should still be disallowed. If no response arrives and the requested message is
-%%    received the message should NOT be considered a triggered message.
+%% 6. [x] If the station rejects the TriggerMessageRequest, then the requested message
+%%        should still be disallowed. If no response arrives and the requested message
+%%        is received the message should NOT be considered a triggered message.
 
 %% 7. BootNotificaionRequest arrives at some time after a
 %%    BootNotificationResponse(status=Accepted) has been sent but

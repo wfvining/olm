@@ -491,13 +491,13 @@ encode_call_test_() ->
     {"Calls can be encoded and decoded",
         %% TODO expand to more message types and versions
         fun() ->
+            {ok, Msg} = ocpp_message:new(
+                '2.0.1',
+                ~"BootNotificationRequest",
+                #{reason => 'PowerUp', chargingStation => #{model => ~"a", vendorName => ~"b"}}
+            ),
             Call = ocpp_rpc:call(
-                ocpp_message_2_0_1:boot_notification_request(
-                    #{
-                        reason => 'PowerUp',
-                        chargingStation => #{model => <<"a">>, vendorName => <<"b">>}
-                    }
-                ),
+                Msg,
                 <<"id">>
             ),
             Encoded = ocpp_rpc:encode(Call),
@@ -506,14 +506,13 @@ encode_call_test_() ->
 
 encode_callresult_test_() ->
     {"CALLRESULT messages can be encoded and decoded", fun() ->
+        {ok, Msg} = ocpp_message:new(
+            '2.0.1',
+            ~"BootNotificationResponse",
+            #{status => 'Accepted', interval => 0, currentTime => {{2025, 1, 1}, {12, 12, 12}}}
+        ),
         CallResult = ocpp_rpc:callresult(
-            ocpp_message_2_0_1:boot_notification_response(
-                #{
-                    status => 'Accepted',
-                    interval => 0,
-                    currentTime => {{2025, 1, 1}, {12, 12, 12}}
-                }
-            ),
+            Msg,
             <<"id">>
         ),
         Encoded = ocpp_rpc:encode(CallResult),

@@ -22,35 +22,35 @@
     | 'SecurityError'
     | 'TypeConstraintViolation'.
 
--record(callerror, {
+-record(rpccallerror, {
     id = <<"-1">> :: binary(),
     code :: error_code(),
     description = <<"">> :: binary(),
     data = #{} :: #{binary() => json:decode_value()}
 }).
 
--record(callresulterror, {
+-record(rpccallresulterror, {
     id = <<"-1">> :: binary(),
     code :: error_code(),
     description = <<"">> :: binary(),
     data = #{} :: #{binary() => json:decode_value()}
 }).
 
--record(call, {id :: binary(), action :: binary(), payload :: ocpp_message:message()}).
--record(send, {id :: binary(), action :: binary(), payload :: ocpp_message:message()}).
--record(callresult, {id :: binary(), payload :: ocpp_message:message()}).
+-record(rpccall, {id :: binary(), action :: binary(), payload :: ocpp_message:message()}).
+-record(rpcsend, {id :: binary(), action :: binary(), payload :: ocpp_message:message()}).
+-record(rpccallresult, {id :: binary(), payload :: ocpp_message:message()}).
 
--opaque callerror() :: #callerror{}.
--opaque callresulterror() :: #callresulterror{}.
--opaque call() :: #call{}.
--opaque send() :: #send{}.
--opaque callresult() :: #callresult{}.
+-opaque callerror() :: #rpccallerror{}.
+-opaque callresulterror() :: #rpccallresulterror{}.
+-opaque call() :: #rpccall{}.
+-opaque send() :: #rpcsend{}.
+-opaque callresult() :: #rpccallresult{}.
 
 -type rpctype() :: call | send | callresult | callerror | callresulterror.
 
 -doc """
 Decode an RPC message. If decoding is succesful a tuple `{ok, RPC}` is
-returned where `RPC` is a tuple containint the message type and the
+returned where `RPC` is a tuple containing the message type and the
 decoded message is returned. If decoding fails `{error, RPCError}` is
 returned where `RPCError` is a tuple containting the error type and an
 appropriate `callerror` or `callresulterror` is returned.
@@ -71,6 +71,7 @@ information, in the form of a `t:callerror()` or a
     | {error, {callerror, callerror()}}
     | {error, {error, callerror() | callresulterror()}}.
 decode(Version, RPCBinary, Options) ->
+    ExpectedAction = proplists:get_value(expected, Options),
     try json:decode(RPCBinary) of
         [2, ID, Action, Payload] ->
             case validate_message_id(ID) of
@@ -78,82 +79,82 @@ decode(Version, RPCBinary, Options) ->
                     decode_request(call, Version, ID, Action, Payload);
                 {error, _} ->
                     {error,
-                        {callerror, #callerror{
+                        {callerror, #rpccallerror{
                             code = 'RpcFrameworkError', description = <<"Invalid message ID">>
                         }}}
             end;
         [2 | Rest] ->
             ID = maybe_message_id(Rest),
             {error,
-                {callerror, #callerror{
+                {callerror, #rpccallerror{
                     code = 'RpcFrameworkError', id = ID, description = <<"Invalid CALL">>
                 }}};
         [3, ID, Payload] ->
             case validate_message_id(ID) of
                 {ok, ID} ->
                     decode_result(
-                        Version, ID, Payload, proplists:get_value(expected, Options)
+                        Version, ID, Payload, ExpectedAction
                     );
                 {error, _} when Version =:= '2.1' ->
                     {error,
-                        {callresulterror, #callresulterror{
+                        {callresulterror, #rpccallresulterror{
                             code = 'RpcFrameworkError', description = <<"Invalid message ID">>
                         }}};
                 {error, _} ->
                     {error,
-                        {error, #callerror{
+                        {error, #rpccallerror{
                             code = 'RpcFrameworkError', description = <<"Invalid message ID">>
                         }}}
             end;
         [3 | Rest] when Version =:= '2.1' ->
             ID = maybe_message_id(Rest),
             {error,
-                {callresulterror, #callresulterror{
+                {callresulterror, #rpccallresulterror{
                     code = 'RpcFrameworkError', id = ID, description = <<"Invalid CALLRESULT">>
                 }}};
         [3 | Rest] ->
             ID = maybe_message_id(Rest),
             {error,
-                {error, #callerror{
+                {error, #rpccallerror{
                     code = 'RpcFrameworkError', id = ID, description = <<"Invalid CALLRESULT">>
                 }}};
         [4, ID, ErrorCode, Description, Data] ->
             case validate_message_id(ID) of
                 {ok, ID} ->
-                    decode_error(callerror, ID, ErrorCode, Description, Data);
+                    decode_error(rpccallerror, ID, ErrorCode, Description, Data);
                 {error, _} ->
                     {error,
-                        {error, #callerror{
+                        {error, #rpccallerror{
                             code = 'RpcFrameworkError', description = <<"Invalid message ID">>
                         }}}
             end;
         [4 | Rest] ->
             ID = maybe_message_id(Rest),
             {error,
-                {error, #callerror{
+                {error, #rpccallerror{
                     code = 'RpcFrameworkError', id = ID, description = <<"Invalid CALLERROR">>
                 }}};
         [5, ID, ErrorCode, Description, Data] when Version =:= '2.1' ->
             case validate_message_id(ID) of
                 {ok, ID} ->
-                    decode_error(callresulterror, ID, ErrorCode, Description, Data);
+                    decode_error(rpccallresulterror, ID, ErrorCode, Description, Data);
                 {error, _} ->
                     {error,
-                        {error, #callerror{
+                        {error, #rpccallerror{
                             code = 'RpcFrameworkError', description = <<"Invalid message ID">>
                         }}}
             end;
         [5 | Rest] when Version =:= '2.1' ->
             ID = maybe_message_id(Rest),
             {error,
-                {error, #callerror{
+                {error, #rpccallerror{
                     code = 'RpcFrameworkError', id = ID, description = <<"Invalid CALLRESULTERROR">>
                 }}};
         [5 | Rest] ->
             Vsn = atom_to_binary(Version),
             ID = maybe_message_id(Rest),
             {error,
-                {callerror, #callerror{
+                {callerror, #rpccallerror{
                     code = 'MessageTypeNotSupported',
                     id = ID,
                     description = <<"CALLRESULTERROR not supported by OCPP version ", Vsn/binary>>
@@ -165,7 +166,7 @@ decode(Version, RPCBinary, Options) ->
             else
                 {error, <<"-1">>} ->
                     {error,
-                        {error, #callerror{
+                        {error, #rpccallerror{
                             code = 'RpcFrameworkError', description = <<"Invalid message ID">>
                         }}};
                 %% have to filter the resulting error since for a send
@@ -179,14 +180,14 @@ decode(Version, RPCBinary, Options) ->
         [6 | Rest] when Version =:= '2.1' ->
             ID = maybe_message_id(Rest),
             {error,
-                {error, #callerror{
+                {error, #rpccallerror{
                     code = 'RpcFrameworkError', id = ID, description = <<"Invalid SEND">>
                 }}};
         [6 | Rest] ->
             ID = maybe_message_id(Rest),
             Vsn = atom_to_binary(Version),
             {error,
-                {callerror, #callerror{
+                {callerror, #rpccallerror{
                     code = 'MessageTypeNotSupported',
                     id = ID,
                     description = <<"SEND not supported by OCPP version ", Vsn/binary>>
@@ -196,7 +197,7 @@ decode(Version, RPCBinary, Options) ->
             TID = integer_to_binary(TypeID),
             Vsn = atom_to_binary(Version),
             {error,
-                {callerror, #callerror{
+                {callerror, #rpccallerror{
                     code = 'MessageTypeNotSupported',
                     id = ID,
                     description =
@@ -205,14 +206,14 @@ decode(Version, RPCBinary, Options) ->
                 }}};
         _ ->
             {error,
-                {error, #callerror{
+                {error, #rpccallerror{
                     code = 'RpcFrameworkError',
                     description = <<"Invalid RPC wrapper">>
                 }}}
     catch
         error:_ ->
             {error,
-                {error, #callerror{
+                {error, #rpccallerror{
                     code = 'RpcFrameworkError', description = <<"Invalid JSON">>
                 }}}
     end.
@@ -237,11 +238,11 @@ decode_error(Type, ID, Code, Description, Data) when
 ->
     try binary_to_existing_atom(Code) of
         ErrorCode ->
-            {ok, {Type, {Type, ID, ErrorCode, Description, Data}}}
+            {ok, {error_tag(Type), {Type, ID, ErrorCode, Description, Data}}}
     catch
         error:badarg ->
             {error,
-                {error, #callerror{
+                {error, #rpccallerror{
                     code = 'RpcFrameworkError',
                     id = ID,
                     description = <<"Unknown error code">>,
@@ -250,7 +251,7 @@ decode_error(Type, ID, Code, Description, Data) when
     end;
 decode_error(_, ID, Code, _, _) when not is_binary(Code) ->
     {error,
-        {error, #callerror{
+        {error, #rpccallerror{
             code = 'RpcFrameworkError',
             id = ID,
             description = <<"Invalid error code">>,
@@ -258,7 +259,7 @@ decode_error(_, ID, Code, _, _) when not is_binary(Code) ->
         }}};
 decode_error(_, ID, _, Description, _) when not is_binary(Description) ->
     {error,
-        {error, #callerror{
+        {error, #rpccallerror{
             code = 'RpcFrameworkError',
             id = ID,
             description = <<"Invalid error description">>,
@@ -266,22 +267,27 @@ decode_error(_, ID, _, Description, _) when not is_binary(Description) ->
         }}};
 decode_error(_, ID, _, _, Data) ->
     {error,
-        {error, #callerror{
+        {error, #rpccallerror{
             code = 'RpcFrameworkError',
             id = ID,
             description = <<"Invalid error data">>,
             data = #{<<"errorData">> => Data}
         }}}.
 
+error_tag(rpccallerror) ->
+    callerror;
+error_tag(rpccallresutlerror) ->
+    callresulterror.
+
 decode_request(Type, Version, ID, Action, Payload) when is_binary(Action), is_map(Payload) ->
-    case ocpp_message:decode(Version, Action, request, Payload) of
+    case ocpp_message:decode(Version, <<Action/binary, "Request">>, Payload) of
         {ok, Message} when Type =:= call ->
-            {ok, {call, #call{id = ID, action = Action, payload = Message}}};
+            {ok, {call, #rpccall{id = ID, action = Action, payload = Message}}};
         {ok, Message} when Type =:= send ->
-            {ok, {send, #send{id = ID, action = Action, payload = Message}}};
+            {ok, {send, #rpcsend{id = ID, action = Action, payload = Message}}};
         {error, {badvalue, {extra_key, Key}}} ->
             {error,
-                {callerror, #callerror{
+                {callerror, #rpccallerror{
                     code = 'OccurenceConstraintViolation',
                     id = ID,
                     description = <<"unallowed property found in payload">>,
@@ -289,21 +295,21 @@ decode_request(Type, Version, ID, Action, Payload) when is_binary(Action), is_ma
                 }}};
         {error, {badvalue, _Reason}} ->
             {error,
-                {callerror, #callerror{
+                {callerror, #rpccallerror{
                     code = 'PropertyConstraintViolation',
                     id = ID,
                     description = <<"invalid value in payload">>
                 }}};
         {error, {badtype, _Reason}} ->
             {error,
-                {callerror, #callerror{
+                {callerror, #rpccallerror{
                     code = 'TypeConstraintViolation',
                     id = ID,
                     description = <<"invalid type in payload">>
                 }}};
         {error, {missing_keys, Missing}} ->
             {error,
-                {callerror, #callerror{
+                {callerror, #rpccallerror{
                     code = 'OccurenceConstraintViolation',
                     id = ID,
                     description = <<"payload missing required properties">>,
@@ -312,27 +318,37 @@ decode_request(Type, Version, ID, Action, Payload) when is_binary(Action), is_ma
     end;
 decode_request(_, _, ID, Action, _) when not is_binary(Action) ->
     {error,
-        {callerror, #callerror{
+        {callerror, #rpccallerror{
             code = 'RpcFrameworkError', id = ID, description = <<"Invalid action">>
         }}};
 decode_request(_, _, ID, _, Payload) when not is_map(Payload) ->
     {error,
-        {callerror, #callerror{
+        {callerror, #rpccallerror{
             code = 'ProtocolError', id = ID, description = <<"Payload is not an object">>
         }}}.
 
+decode_result(Version, ID, _, undefined) ->
+    ErrorTag =
+        if
+            Version =:= '2.1' -> callresulterror;
+            true -> error
+        end,
+    {error,
+        {ErrorTag, #rpccallresulterror{
+            code = 'InternalError', id = ID, description = <<"Result action unknown">>, data = #{}
+        }}};
 decode_result(Version, ID, Payload, ExpectedAction) when is_map(Payload) ->
     ErrorTag =
         if
             Version =:= '2.1' -> callresulterror;
             true -> error
         end,
-    case ocpp_message:decode(Version, ExpectedAction, response, Payload) of
+    case ocpp_message:decode(Version, <<ExpectedAction/binary, "Response">>, Payload) of
         {ok, Message} ->
-            {ok, {callresult, #callresult{id = ID, payload = Message}}};
+            {ok, {callresult, #rpccallresult{id = ID, payload = Message}}};
         {error, {missing_keys, Missing}} ->
             {error,
-                {ErrorTag, #callresulterror{
+                {ErrorTag, #rpccallresulterror{
                     code = 'OccurenceConstraintViolation',
                     id = ID,
                     description = <<"Missing required properties">>,
@@ -340,7 +356,7 @@ decode_result(Version, ID, Payload, ExpectedAction) when is_map(Payload) ->
                 }}};
         {error, {badvalue, {extra_key, Key}}} ->
             {error,
-                {ErrorTag, #callresulterror{
+                {ErrorTag, #rpccallresulterror{
                     code = 'OccurenceConstraintViolation',
                     id = ID,
                     description = <<"unallowed property found in payload">>,
@@ -348,14 +364,14 @@ decode_result(Version, ID, Payload, ExpectedAction) when is_map(Payload) ->
                 }}};
         {error, {badvalue, _Reason}} ->
             {error,
-                {ErrorTag, #callresulterror{
+                {ErrorTag, #rpccallresulterror{
                     code = 'PropertyConstraintViolation',
                     id = ID,
                     description = <<"invalid value in payload">>
                 }}};
         {error, {badtype, _}} ->
             {error,
-                {ErrorTag, #callresulterror{
+                {ErrorTag, #rpccallresulterror{
                     code = 'TypeConstraintViolation',
                     id = ID,
                     description = <<"invalid type in payload">>
@@ -368,21 +384,21 @@ decode_result(Version, ID, _, _) ->
             true -> error
         end,
     {error,
-        {ErrorTag, #callresulterror{
+        {ErrorTag, #rpccallresulterror{
             code = 'ProtocolError', id = ID, description = <<"Payload is not an object">>
         }}}.
 
 -spec encode(call() | callresult() | send() | callerror() | callresulterror()) -> binary().
-encode(#call{id = ID, action = Action, payload = Payload}) ->
+encode(#rpccall{id = ID, action = Action, payload = Payload}) ->
     iolist_to_binary(
         json:encode(
             [2, ID, Action, Payload],
             fun encoder/2
         )
     );
-encode(#callresult{id = ID, payload = Payload}) ->
+encode(#rpccallresult{id = ID, payload = Payload}) ->
     iolist_to_binary(json:encode([3, ID, Payload], fun encoder/2));
-encode(#callerror{id = ID, code = Code, description = Description, data = Data}) ->
+encode(#rpccallerror{id = ID, code = Code, description = Description, data = Data}) ->
     iolist_to_binary(json:encode([4, ID, Code, Description, Data])).
 
 encoder(Term, _Encoder) when is_tuple(Term) ->
@@ -395,14 +411,14 @@ Construct a CALL RPC message.
 """.
 -spec call(Message :: ocpp_message:message(), ID :: binary()) -> call().
 call(Message, ID) ->
-    #call{payload = Message, id = ID, action = ocpp_message:action(Message)}.
+    #rpccall{payload = Message, id = ID, action = ocpp_message:action(Message)}.
 
 -doc """
 Construct a CALLRESULT RPC message.
 """.
 -spec callresult(Message :: ocpp_message:message(), ID :: binary()) -> callresult().
 callresult(Message, ID) ->
-    #callresult{id = ID, payload = Message}.
+    #rpccallresult{id = ID, payload = Message}.
 
 -doc """
 Construct a CALLERROR RPC message.
@@ -412,30 +428,30 @@ Construct a CALLERROR RPC message.
 callerror(Code, ID, Options) ->
     Description = proplists:get_value(description, Options, <<"">>),
     Details = proplists:get_value(details, Options, #{}),
-    #callerror{code = Code, id = ID, description = Description, data = Details}.
+    #rpccallerror{code = Code, id = ID, description = Description, data = Details}.
 
 -spec error_type(callerror() | callresulterror()) -> callerror | callresulterror.
-error_type(#callerror{}) ->
+error_type(#rpccallerror{}) ->
     callerror;
-error_type(#callresulterror{}) ->
+error_type(#rpccallresulterror{}) ->
     callresulterror.
 
 -spec error_code(callerror() | callresulterror()) -> error_code().
-error_code(#callerror{code = Code}) ->
+error_code(#rpccallerror{code = Code}) ->
     Code;
-error_code(#callresulterror{code = Code}) ->
+error_code(#rpccallresulterror{code = Code}) ->
     Code.
 
 -spec error_description(callerror() | callresulterror()) -> binary().
-error_description(#callerror{description = Description}) ->
+error_description(#rpccallerror{description = Description}) ->
     Description;
-error_description(#callresulterror{description = Description}) ->
+error_description(#rpccallresulterror{description = Description}) ->
     Description.
 
 -spec error_details(callerror() | callresulterror()) -> map().
-error_details(#callerror{data = Data}) ->
+error_details(#rpccallerror{data = Data}) ->
     Data;
-error_details(#callresulterror{data = Data}) ->
+error_details(#rpccallresulterror{data = Data}) ->
     Data.
 
 -spec id(
@@ -445,21 +461,21 @@ error_details(#callresulterror{data = Data}) ->
     | ocpp_rpc:callresulterror()
     | ocpp_rpc:send()
 ) -> binary().
-id(#call{id = ID}) ->
+id(#rpccall{id = ID}) ->
     ID;
-id(#send{id = ID}) ->
+id(#rpcsend{id = ID}) ->
     ID;
-id(#callresult{id = ID}) ->
+id(#rpccallresult{id = ID}) ->
     ID;
-id(#callerror{id = ID}) ->
+id(#rpccallerror{id = ID}) ->
     ID;
-id(#callresulterror{id = ID}) ->
+id(#rpccallresulterror{id = ID}) ->
     ID.
 
 -spec payload(ocpp_rpc:call() | ocpp_rpc:callresult() | ocpp_rpc:send()) -> ocpp_message:message().
-payload(#call{payload = Payload}) ->
+payload(#rpccall{payload = Payload}) ->
     Payload;
-payload(#callresult{payload = Payload}) ->
+payload(#rpccallresult{payload = Payload}) ->
     Payload;
-payload(#send{payload = Payload}) ->
+payload(#rpcsend{payload = Payload}) ->
     Payload.

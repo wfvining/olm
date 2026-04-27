@@ -1,0 +1,4 @@
+{'EVSEType', #{properties => #{id => {integer, #{min => 1}}}}}.
+{'ChargingProfileType', #{properties => #{stackLevel => {integer, #{min => 0}}}}}.
+{'IdTokenInfoType', #{properties => #{chargingPriority => {integer, #{min => -9, max => 9}}}}}.
+{'CostType', #{properties => #{amountMultiplier => {integer, #{min => -3, max => 3}}}}}.
