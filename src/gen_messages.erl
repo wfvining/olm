@@ -83,10 +83,14 @@ load_spec(Spec) when not is_map_key(~"type", Spec) ->
     any.
 
 coerce_type(~"integer", Limits) ->
-    maps:map(fun (min, Min) when is_float(Min) -> trunc(math:ceil(Min));
-                 (max, Max) when is_float(Max) -> trunc(math:floor(Max));
-                 (_, X) -> X
-             end, Limits);
+    maps:map(
+        fun
+            (min, Min) when is_float(Min) -> trunc(math:ceil(Min));
+            (max, Max) when is_float(Max) -> trunc(math:floor(Max));
+            (_, X) -> X
+        end,
+        Limits
+    );
 coerce_type(~"float", Limits) ->
     #{K => float(V) || K := V <- Limits};
 coerce_type(~"number", Limits) ->
