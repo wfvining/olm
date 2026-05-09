@@ -13,6 +13,20 @@ station_rpccall_not_booted(StationID, Message) ->
     RPCCall = ocpp_rpc:call(Message, messageid()),
     ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
 
+station_rpccall_security_error(StationID, RPCCall) ->
+    ok = ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)),
+    receive
+        {ocpp, {rpcsend, ReplyBin}} ->
+            ocpp_rpc:decode('2.0.1', ReplyBin, [
+                {expected, ocpp_message:action(ocpp_rpc:payload(RPCCall))}
+            ])
+    after 100 ->
+        {error, timeout}
+    end.
+
+csms_rpccall_booted(StationID, Message, MessageID) ->
+    ocpp_station:call(StationID, MessageID, Message).
+
 csms_rpccall_not_booted(StationID, Message) ->
     ocpp_station:call(StationID, messageid(), Message).
 

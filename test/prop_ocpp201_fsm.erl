@@ -139,7 +139,34 @@ connected(accepted, _Data) ->
     [{history, {call, ?MODULE, todo, ["allow heartbeat and other messages, allow boot, etc..."]}}];
 connected(booted, _Data) ->
     %% booted but not accepted
-    [{history, {call, ?MODULE, todo, ["Heartbeat fails"]}}].
+    [
+        {history,
+            {call, station201_shim, station_rpccall_security_error, [
+                ?STATIONID,
+                ?LET(
+                    Payload,
+                    ?SUCHTHAT(
+                        Message,
+                        ocpp_message_gen:request('2.0.1'),
+                        ocpp_message:action(Message) =/= ~"BootNotification"
+                    ),
+                    ocpp_rpc:call(Payload, messageid())
+                )
+            ]}},
+        {history,
+            {call, station201_shim, csms_rpccall_booted, [
+                ?STATIONID, ocpp_message_gen:request('2.0.1'), messageid()
+            ]}},
+        {booting,
+            {call, station201_shim, boot, [
+                ?STATIONID,
+                ?LET(
+                    {BootRequest, MessageID},
+                    {ocpp_message_gen:message('2.0.1', ~"BootNotificationRequest"), messageid()},
+                    ocpp_rpc:call(BootRequest, MessageID)
+                )
+            ]}}
+    ].
 
 booting(#data{station_cip = BootCall}) ->
     [
@@ -153,6 +180,21 @@ booting(#data{station_cip = BootCall}) ->
                     [{override, #{status => 'Accepted'}}]
                 )
             ]}},
+        %% what should happen if the station sends another RPC CALL
+        %% before the CSMS responds? It should trigger an error of
+        %% some kind - probably not an RPC CALLERROR though since we
+        %% aren't booted yet.
+        {
+            {connected, not_booted},
+            {call, station201_shim, station_rpccall_not_booted, [
+                ?STATIONID,
+                ?SUCHTHAT(
+                    Message,
+                    ocpp_message_gen:request('2.0.1'),
+                    ocpp_message:action(Message) =/= ~"BootNotification"
+                )
+            ]}
+        },
         {pending,
             {call, station201_shim, pending_boot, [
                 ?STATIONID,
@@ -258,14 +300,62 @@ postcondition(
 ) ->
     true;
 postcondition(
-  {connected, not_booted},
-  {connected, not_booted},
-  _Data,
-  {call, station201_shim, csms_rpccall_not_booted, [_, Message]},
-  {error, not_provisioned}
- ) ->
+    {connected, not_booted},
+    {connected, not_booted},
+    _Data,
+    {call, station201_shim, csms_rpccall_not_booted, [_, Message]},
+    {error, not_provisioned}
+) ->
     Action = ocpp_message:action(Message),
     timeout =:= station201_shim:recv(Action);
+postcondition(
+    booting,
+    booting,
+    _Data,
+    {call, station201_shim, csms_rpccall_not_booted, [_, Message]},
+    {error, not_provisioned}
+) ->
+    Action = ocpp_message:action(Message),
+    timeout =:= station201_shim:recv(Action);
+postcondition(
+    {connected, booted},
+    {connected, booted},
+    _Data,
+    {call, station201_shim, station_rpccall_security_error, [_, RPC]},
+    {ok, {callerror, Error}}
+) ->
+    ocpp_rpc:error_code(Error) =:= 'SecurityError' andalso
+        ocpp_rpc:id(Error) =:= ocpp_rpc:id(RPC);
+postcondition(
+    {connected, booted},
+    {connected, booted},
+    _Data,
+    {call, station201_shim, station_rpccall_security_error, [_, RPC]},
+    NotOk
+) ->
+    ?debugVal(NotOk),
+    false;
+postcondition(
+    {connected, booted},
+    {connected, booted},
+    _Data,
+    {call, station201_shim, csms_rpccall_booted, _},
+    {error, not_provisioned}
+) ->
+    receive
+        {ocpp, {rpcsend, _}} ->
+            false
+    after 50 ->
+        true
+    end;
+postcondition(
+    booting,
+    {connected, not_booted},
+    _Data,
+    {call, station201_shim, station_rpccall_not_booted, _},
+    {error, not_provisioned}
+) ->
+    true;
 postcondition(
     booting,
     idle,
@@ -317,7 +407,8 @@ postcondition(
         Message =:= Payload;
 postcondition(_From, _To, _Data, {call, ?MODULE, todo, _}, todo) ->
     true;
-postcondition(_From, _To, _Data, {call, _Mod, _Fun, _Args}, _Res) ->
+postcondition(_From, _To, _Data, {call, _Mod, _Fun, _Args} = Call, Res) ->
+    io:format("fallthrough: ~p -> ~p\n", [Call, Res]),
     false.
 
 %% Assuming the postcondition for a call was true, update the model
@@ -330,6 +421,20 @@ next_state_data(booting, idle, Data, _Res, {call, station201_shim, Fun, _}) when
     Data#data{station_cip = undefined};
 next_state_data({connected, _}, booting, Data, _Res, {call, station201_shim, boot, [_, RPCCall]}) ->
     Data#data{station_cip = RPCCall};
+next_state_data(
+    booting,
+    {connected, not_booted},
+    Data,
+    _Res,
+    {call, station201_shim, station_rpccall_not_booted, _}
+) ->
+    Data#data{station_cip = undefined};
+next_state_data(booting, _, Data, _Res, {call, station201_shim, BootCommand, _}) when
+    BootCommand =:= accept_boot;
+    BootCommand =:= reject_boot;
+    BootCommand =:= pending_boot
+->
+    Data#data{station_cip = undefined};
 next_state_data(_From, _To, Data, _Res, {call, _Mod, _Fun, _Args}) ->
     NewData = Data,
     NewData.
