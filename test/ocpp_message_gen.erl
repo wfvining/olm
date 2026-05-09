@@ -60,8 +60,11 @@ message(Version, MessageType, Options) ->
 request(Version) ->
     load_schema(Version, ~"BootNotificationRequest"),
     MTypes = persistent_term:get({?MODULE, Version}),
-    oneof([message(Version, MessageType) || MessageType <- maps:keys(MTypes), 
-                  binary:match(MessageType, ~"Request", [{scope, {byte_size(MessageType), -7}}]) =/= nomatch]).
+    oneof([
+        message(Version, MessageType)
+     || MessageType <- maps:keys(MTypes),
+        binary:match(MessageType, ~"Request", [{scope, {byte_size(MessageType), -7}}]) =/= nomatch
+    ]).
 
 %% XXX This just removes keys from top level object. Full support for
 %% recursively descending into arrays or for specifying properties in
