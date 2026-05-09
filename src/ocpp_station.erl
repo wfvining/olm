@@ -265,31 +265,12 @@ provisioning({call, From}, {rpc, Pid, RPCBinary}, State = #state{rpc_call = Pend
                     {keep_state_and_data, [
                         {reply, From, {error, duplicate_message}}
                     ]};
-                MessageType when not State#state.has_booted ->
+                MessageType ->
                     logger:warning(
                         "~p got unexpected ~p message before provisioning (MessageID = ~p)",
                         [State#state.stationid, MessageType, ocpp_rpc:id(RPCCall)]
                     ),
                     {keep_state_and_data, [{reply, From, {error, not_provisioned}}]};
-                MessageType ->
-                    logger:warning(
-                        "~p got unexpected ~p message before station accepted (MessageID = ~p)",
-                        [State#state.stationid, MessageType, ocpp_rpc:id(RPCCall)]
-                    ),
-                    rpcsend(
-                        State#state.connection,
-                        ocpp_rpc:callerror(
-                            'SecurityError',
-                            MessageID,
-                            [
-                                {description,
-                                    ~B"Unsolicited RPCCALL before station has been Accepted"},
-                                {details, #{~B"action" => ocpp_message:action(Payload)}}
-                            ]
-                        )
-                    ),
-                    {keep_state_and_data, [{reply, From, ok}]}
-            end;
         {ok, {callresult, CallResult}} ->
             logger:warning(
                 "got illegal CALLRESULT before BootNotificationResponse has been sent~n"
@@ -318,6 +299,8 @@ provisioning({call, From}, {rpc, Pid, RPCBinary}, State = #state{rpc_call = Pend
             %% {keep_state_and_data, [{reply, From, {error, Reason}}]}
             {keep_state_and_data, [{reply, From, {error, not_provisioned}}]}
     end;
+provisioning({call, From}, {send, {call, _, _}}, State) ->
+    {keep_state_and_data, [{reply, From, {error, not_provisioned}}]};
 provisioning(
     {call, From}, {send, {callresult, MessageID, Message}}, #state{rpc_call = PendingCall} = State
 ) ->
