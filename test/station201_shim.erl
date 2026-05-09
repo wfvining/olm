@@ -45,6 +45,15 @@ reject_boot(StationID, RPCCall, Reply) ->
 heartbeat(StationID, RPCCall) ->
     ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
 
+set_variables_request(StationID, MessageID, Request) ->
+    ocpp_station:call(StationID, MessageID, Request).
+
+set_variables_response(StationID, RPCReply) ->
+    ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCReply)).
+
+set_variables_response_expired(StationID, RPCReply) ->
+    set_variables_response(StationID, RPCReply).
+
 valid_reply(StationID, MessageID, Message) ->
     case ocpp_station:reply(StationID, MessageID, Message) of
         ok ->

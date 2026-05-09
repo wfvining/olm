@@ -3,7 +3,7 @@
 -export([decode/3, encode/1]).
 -export([call/2, callresult/2, callerror/3]).
 -export([id/1, error_type/1, error_code/1, error_description/1, error_details/1]).
--export([payload/1]).
+-export([payload/1, action/1]).
 
 -export_type([error_code/0, rpctype/0]).
 -export_type([call/0, callresult/0, callerror/0, callresulterror/0, send/0]).
@@ -471,6 +471,12 @@ id(#rpccallerror{id = ID}) ->
     ID;
 id(#rpccallresulterror{id = ID}) ->
     ID.
+
+-spec action(ocpp_rpc:call() | ocpp_rpc:callresult()) -> binary().
+action(#rpccall{action = Action}) ->
+    Action;
+action(#rpccallresult{payload = Payload}) ->
+    ocpp_message:action(Payload).
 
 -spec payload(ocpp_rpc:call() | ocpp_rpc:callresult() | ocpp_rpc:send()) -> ocpp_message:message().
 payload(#rpccall{payload = Payload}) ->

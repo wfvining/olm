@@ -69,10 +69,12 @@ prop_test() ->
 -record(data, {
     %% a call in progress from the station to the csms
     station_cip :: ocpp_rpc:call() | undefined,
+    %% list of station-initiated calls that timed out before response from csms
+    station_timed_out = [] :: [ocpp_rpc:call()],
     %% a call in progress from the csms to the station
-
-    %% not sure this will be the right type
     csms_cip :: ocpp_rpc:call() | undefined,
+    %% list of CSMS-initiated calls that timed out before response from station
+    csms_timed_out = [] :: [ocpp_rpc:call()],
     %% list of TriggerMessageRequests
     accepted_triggers = [] :: [ocpp_message:message()],
     rejected_triggers = [] :: [ocpp_message:message()]
@@ -140,19 +142,7 @@ connected(accepted, _Data) ->
 connected(booted, _Data) ->
     %% booted but not accepted
     [
-        {history,
-            {call, station201_shim, station_rpccall_security_error, [
-                ?STATIONID,
-                ?LET(
-                    Payload,
-                    ?SUCHTHAT(
-                        Message,
-                        ocpp_message_gen:request('2.0.1'),
-                        ocpp_message:action(Message) =/= ~"BootNotification"
-                    ),
-                    ocpp_rpc:call(Payload, messageid())
-                )
-            ]}},
+        functional_block_b_security_error(),
         {history,
             {call, station201_shim, csms_rpccall_booted, [
                 ?STATIONID, ocpp_message_gen:request('2.0.1'), messageid()
@@ -180,10 +170,6 @@ booting(#data{station_cip = BootCall}) ->
                     [{override, #{status => 'Accepted'}}]
                 )
             ]}},
-        %% what should happen if the station sends another RPC CALL
-        %% before the CSMS responds? It should trigger an error of
-        %% some kind - probably not an RPC CALLERROR though since we
-        %% aren't booted yet.
         {
             {connected, not_booted},
             {call, station201_shim, station_rpccall_not_booted, [
@@ -217,9 +203,82 @@ booting(#data{station_cip = BootCall}) ->
         }
     ].
 
-pending(_Data) ->
+pending(Data) ->
     %% received a BootNotificationResponse with status=Pending
-    [{history, {call, ?MODULE, todo, ["Configuration Messages"]}}].
+
+    %, use_case_B06(), use_case_B07(), use_case_B08()]).
+    lists:flatten([functional_block_b_security_error(), use_case_B05(Data)]).
+
+use_case_B05(Data) ->
+    %% SetVariables
+    [
+        {history,
+            {call, station201_shim, set_variables_request, [
+                ?STATIONID, messageid(), ocpp_message_gen:message('2.0.1', ~"SetVariablesRequest")
+            ]}}
+        | use_case_B05_responses(Data)
+    ].
+
+use_case_B05_responses(Data) ->
+    GoodResponse =
+        if
+            Data#data.csms_cip /= undefined ->
+                case ocpp_rpc:action(Data#data.csms_cip) of
+                    ~"SetVariables" ->
+                        [
+                            {history,
+                                {call, station201_shim, set_variables_response, [
+                                    ?STATIONID, set_variables_response(Data#data.csms_cip)
+                                ]}}
+                        ];
+                    _ ->
+                        []
+                end;
+            true ->
+                []
+        end,
+    GoodResponse ++
+        [
+            {history,
+                {call, station201_shim, set_variables_response_expired, [
+                    ?STATIONID, set_variables_response(Req)
+                ]}}
+         || %% reply to an old call
+            Req <- Data#data.csms_timed_out,
+            ocpp_rpc:action(Req) =:= ~"SetVariables"
+        ].
+
+set_variables_response(Call) ->
+    MessageID = ocpp_rpc:id(Call),
+    Message = ocpp_rpc:payload(Call),
+    VarData = ocpp_message:get('setVariableData', Message),
+    Payload = ocpp_message_gen:message(
+        '2.0.1',
+        ~"SetVariablesResponse",
+        #{
+            setVariableResult => [
+                maps:with([component, variable, attributeType], Var)
+             || Var <- VarData
+            ]
+        }
+    ),
+    ocpp_rpc:callresult(Payload, MessageID).
+
+%% This defines a command to test B01.FR.10, B02.FR.05, B03.FR.08
+functional_block_b_security_error() ->
+    {history,
+        {call, station201_shim, station_rpccall_security_error, [
+            ?STATIONID,
+            ?LET(
+                Payload,
+                ?SUCHTHAT(
+                    Message,
+                    ocpp_message_gen:request('2.0.1'),
+                    ocpp_message:action(Message) =/= ~"BootNotification"
+                ),
+                ocpp_rpc:call(Payload, messageid())
+            )
+        ]}}.
 
 todo(What) ->
     io:format("WARNING - TODO (~s)\n", [What]),
@@ -262,7 +321,36 @@ weight({offline, _}, {connected, _}, _Call) -> 10;
 weight(_FromState, _ToState, _Call) -> 1.
 
 %% Picks whether a command should be valid.
-precondition(_From, _To, #data{}, {call, _Mod, _Fun, _Args}) -> true.
+precondition(
+    {connected, SubState}, _To, _Data, {call, station201_shim, station_rpccall_security_error, _}
+) when
+    SubState =/= not_booted
+->
+    false;
+precondition(From, _To, _Data, {call, station201_shim, station_rpccall_security_error, _}) when
+    From =/= pending
+->
+    false;
+precondition(
+    {connected, SubState}, _To, _Data, {call, station201_shim, set_variables_request, _}
+) when
+    SubState =/= accepted
+->
+    false;
+precondition({offline, _}, _To, _Data, {call, station201_shim, set_variables_request, _}) ->
+    false;
+precondition(booting, _To, _Data, {call, station201_shim, set_variables_request, _}) ->
+    false;
+precondition(
+    _From, _To, #data{csms_cip = CiP}, {call, station201_shim, set_variables_request, _}
+) when CiP =/= undefined ->
+    false;
+precondition(
+    _From, _To, #data{csms_cip = undefined}, {call, station201_shim, set_variables_response, _}
+) ->
+    false;
+precondition(_From, _To, #data{}, {call, _Mod, _Fun, _Args}) ->
+    true.
 
 %% Given the state states and data *prior* to the call
 %% `{call, Mod, Fun, Args}', determine if the result `Res' (coming
@@ -318,23 +406,14 @@ postcondition(
     Action = ocpp_message:action(Message),
     timeout =:= station201_shim:recv(Action);
 postcondition(
-    {connected, booted},
-    {connected, booted},
+    _From,
+    _To,
     _Data,
     {call, station201_shim, station_rpccall_security_error, [_, RPC]},
     {ok, {callerror, Error}}
 ) ->
     ocpp_rpc:error_code(Error) =:= 'SecurityError' andalso
         ocpp_rpc:id(Error) =:= ocpp_rpc:id(RPC);
-postcondition(
-    {connected, booted},
-    {connected, booted},
-    _Data,
-    {call, station201_shim, station_rpccall_security_error, [_, RPC]},
-    NotOk
-) ->
-    ?debugVal(NotOk),
-    false;
 postcondition(
     {connected, booted},
     {connected, booted},
@@ -405,6 +484,25 @@ postcondition(
     ocpp_message:action(Message) =:= ocpp_message:action(ocpp_rpc:payload(RPCCall)) andalso
         ocpp_rpc:id(RPCResult) =:= ocpp_rpc:id(RPCCall) andalso
         Message =:= Payload;
+postcondition(
+    _From, _To, _Data, {call, station201_shim, set_variables_request, [_, MessageID, Request]}, ok
+) ->
+    receive
+        {ocpp, {rpcsend, EncodedMessage}} ->
+            case ocpp_rpc:decode('2.0.1', EncodedMessage, [{expected, ~"SetVariablesRequest"}]) of
+                {ok, {call, RPCCall}} ->
+                    ocpp_rpc:id(RPCCall) =:= MessageID andalso ocpp_rpc:payload(RPCCall) == Request;
+                _ ->
+                    false
+            end
+    after 50 ->
+        true
+    end;
+postcondition(_From, _To, _Data, {call, station201_shim, SVR, _}, ok) when
+    SVR =:= set_variables_response;
+    SVR =:= set_variables_response_expired
+->
+    true;
 postcondition(_From, _To, _Data, {call, ?MODULE, todo, _}, todo) ->
     true;
 postcondition(_From, _To, _Data, {call, _Mod, _Fun, _Args} = Call, Res) ->
@@ -435,6 +533,21 @@ next_state_data(booting, _, Data, _Res, {call, station201_shim, BootCommand, _})
     BootCommand =:= pending_boot
 ->
     Data#data{station_cip = undefined};
+next_state_data(
+    _From, _To, Data, _Res, {call, station201_shim, set_variables_request, [_, MessageID, Request]}
+) ->
+    Data#data{csms_cip = ocpp_rpc:call(Request, MessageID)};
+next_state_data(_From, _To, Data, _Res, {call, station201_shim, set_variables_response, _}) ->
+    Data#data{csms_cip = undefined};
+next_state_data(
+    _From, _To, Data, _Res, {call, station201_shim, set_variables_response_expired, [_, RPCReply]}
+) ->
+    Data#data{
+        csms_timed_out = [
+            Req
+         || Req <- Data#data.csms_timed_out, ocpp_rpc:id(Req) /= ocpp_rpc:id(RPCReply)
+        ]
+    };
 next_state_data(_From, _To, Data, _Res, {call, _Mod, _Fun, _Args}) ->
     NewData = Data,
     NewData.

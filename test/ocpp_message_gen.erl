@@ -75,25 +75,31 @@ remove_properties([Prop | Rest], M) ->
     remove_properties(Rest, maps:remove(Prop, M)).
 
 apply_custom(Obj, CustomGens) ->
-    %% XXX This doesn't handle everything, in particular cases related to arrays.
     ?LET(
         Overrides,
         gen_custom(CustomGens),
-        maps:merge_with(
-            fun
-                F(_, M1, M2) when is_map(M1), is_map(M2) -> maps:merge_with(F, M1, M2);
-                F(_, A1, A2) when is_list(A1), is_map(A2) ->
-                    [maps:merge_with(F, X, A2) || X <- A1];
-                F(_, _, V) ->
-                    V
-            end,
-            Obj,
-            Overrides
-        )
+        maps:merge_with(fun maybe_merge/3, Obj, Overrides)
     ).
+
+maybe_merge(_, M1, M2) when is_map(M1), is_map(M2) -> maps:merge_with(fun maybe_merge/3, M1, M2);
+maybe_merge(_, A1, M2) when is_list(A1), is_map(M2) ->
+    %% apply single override to all elements
+    [maps:merge_with(fun maybe_merge/3, X, M2) || X <- A1];
+maybe_merge(_, A1, A2) when is_list(A1), is_list(A2), length(A1) =< length(A2) ->
+    %% apply per-element overrides, extending the
+    %% original array if there are more elements in
+    %% the override array
+    [maybe_merge(nil, X1, X2) || {X1, X2} <- lists:zip(A1, A2)] ++ lists:nthtail(length(A1), A2);
+maybe_merge(_, A1, A2) when is_list(A1), is_list(A2) ->
+    %% if the per-element list is shorter than the original then it supersedes it entirely
+    A2;
+maybe_merge(_, _, V) ->
+    V.
 
 gen_custom(M) when is_map(M) ->
     ?LET(Xs, [{K, gen_custom(V)} || K := V <- M], maps:from_list(Xs));
+gen_custom(Xs) when is_list(Xs) ->
+    [gen_custom(X) || X <- Xs];
 gen_custom(G) ->
     G.
 

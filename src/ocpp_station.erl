@@ -270,7 +270,8 @@ provisioning({call, From}, {rpc, Pid, RPCBinary}, State = #state{rpc_call = Pend
                         "~p got unexpected ~p message before provisioning (MessageID = ~p)",
                         [State#state.stationid, MessageType, ocpp_rpc:id(RPCCall)]
                     ),
-                    {keep_state_and_data, [{reply, From, {error, not_provisioned}}]};
+                    {keep_state_and_data, [{reply, From, {error, not_provisioned}}]}
+            end;
         {ok, {callresult, CallResult}} ->
             logger:warning(
                 "got illegal CALLRESULT before BootNotificationResponse has been sent~n"
