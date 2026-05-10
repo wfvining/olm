@@ -39,6 +39,67 @@ end).
         end}
 ).
 
+-define(STALE_TIMEOUT, 30000).
+
+stale_timeout_test_() ->
+    {setup, fun mock_station_manager/0, fun teardown_station_manager/1, [
+        {"call timers are canceled if the station process is stopped",
+         {timeout, (?STALE_TIMEOUT div 1000) + 5, fun() ->
+            {StationID, Conn, _SPid, Client} = prepare_station(),
+            try
+                ocpp_station:stop(StationID),
+                timer:sleep(100),
+                process_flag(trap_exit, true),
+                verify_no_stale_call_timer(StationID, Conn)
+            after
+                process_flag(trap_exit, false),
+                catch ocpp_station:stop(StationID),
+                ocpp_test_client:stop(Client)
+            end
+         end}},
+        {"call timers are canceled if the station process exits",
+         {timeout, (?STALE_TIMEOUT div 1000) + 5, fun() ->
+            {StationID, Conn, SPid, Client} = prepare_station(),
+            try
+                process_flag(trap_exit, true),
+                exit(SPid, kill),
+                receive {'EXIT', SPid, _Reason} -> ok end,
+                verify_no_stale_call_timer(StationID, Conn)
+            after
+                process_flag(trap_exit, false),
+                catch ocpp_station:stop(StationID),
+                ocpp_test_client:stop(Client)
+            end
+         end}}
+    ]}.
+
+verify_no_stale_call_timer(StationID, Conn) ->
+    {ok, Pid} = ocpp_station:start_link(StationID),
+    %% the existing client connection can persist because it uses the
+    %% station ID, not the Pid. {ok, Conn} =
+    %% ocpp_test_client:connect(Client, ['2.0.1']),
+    Timeout = ?STALE_TIMEOUT + 1000,
+    receive
+        {'EXIT', Pid, Reason} ->
+            error({test_failed, {station_down, Reason}})
+    after Timeout ->
+        ocpp_test_client:boot_to(Conn, accepted),
+        HBR = heartbeat_request('2.0.1'),
+        ?assertMatch({ok, {callresult, _}}, ocpp_test_client:do_calls(Conn, [HBR]))
+    end.
+
+prepare_station() ->
+    {ok, _} = application:ensure_all_started(gproc),
+    StationID = station_id(),
+    {ok, SPid} = ocpp_station:start_link(StationID, []),
+    {ok, Client} = ocpp_test_client:start_link(StationID),
+    Conn = ocpp_test_client:connect(Client, ['2.0.1']),
+    ocpp_test_client:boot_to(Conn, pending),
+    {TMReq, _TMResp} = trigger_message_request('2.0.1'),
+    ok = ocpp_station:call(StationID, ~"foo", TMReq),
+    _ = ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(100) end),
+    {StationID, Conn, SPid, Client}.
+
 connect_test_() ->
     {"check basic connect functionality", setup, fun mock_station_manager/0,
         fun teardown_station_manager/1,
@@ -318,7 +379,8 @@ boot_pending_untriggered(Conn, StationID, Version) ->
         Version =:= '1.6' ->
             ?assertEqual({error, not_provisioned}, Result),
             ?assertError(
-                timeout, ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(100) end)
+                client_recv_timeout,
+                ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(100) end)
             );
         Version =/= '1.6' ->
             Response = ocpp_test_client:do(
@@ -782,7 +844,9 @@ call_before_boot(Conn, StationID, Version) ->
         ocpp_station:rpc(StationID, ocpp_rpc:encode(RPC))
     end,
     ?assertEqual({error, not_provisioned}, ocpp_test_client:do(Conn, F)),
-    ?assertError(timeout, ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(50) end)).
+    ?assertError(
+        client_recv_timeout, ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(50) end)
+    ).
 
 call_station_before_boot(ConnHandle, StationID, Version) ->
     {ResetRequest, _ResetResponse} = reset_request(Version),
@@ -790,7 +854,9 @@ call_station_before_boot(ConnHandle, StationID, Version) ->
         {error, not_provisioned},
         ocpp_station:call(StationID, ocpp_test_client:message_id(), ResetRequest)
     ),
-    ?assertError(timeout, ocpp_test_client:do(ConnHandle, fun() -> ocpp_test_client:recv(50) end)).
+    ?assertError(
+        client_recv_timeout, ocpp_test_client:do(ConnHandle, fun() -> ocpp_test_client:recv(50) end)
+    ).
 
 boot_pending_call_station(ConnHandle, StationID, Version) ->
     ocpp_test_client:boot_to(ConnHandle, pending),
@@ -878,7 +944,9 @@ no_call_while_provisioning(Conn, StationID, Version) ->
     end,
     ok = ocpp_test_client:boot_to(Conn, provisioning),
     ?assertEqual({error, not_provisioned}, ocpp_test_client:do(Conn, F)),
-    ?assertError(timeout, ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(50) end)).
+    ?assertError(
+        client_recv_timeout, ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(50) end)
+    ).
 
 repeat_boot_notification_request_while_provisioning(Conn, StationID, Version) ->
     BootNotificationRequest = ocpp_test_client:make_boot_notification_request(Version, []),
@@ -897,7 +965,9 @@ repeat_boot_notification_request_while_provisioning(Conn, StationID, Version) ->
         ocpp_station:reply(StationID, ID1, BootNotificationResponse)
     end,
     ?assertEqual({error, {call_not_pending, ID1}}, ocpp_test_client:do(Conn, F)),
-    ?assertError(timeout, ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(50) end)),
+    ?assertError(
+        client_recv_timeout, ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(50) end)
+    ),
     no_call_while_provisioning(Conn, StationID, Version).
 
 %%% fixtures and utility functions

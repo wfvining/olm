@@ -203,7 +203,7 @@ recv(Timeout) ->
         Message ->
             error({unexpected_message, Message})
     after Timeout ->
-        error(timeout)
+        error(client_recv_timeout)
     end.
 
 -doc """
