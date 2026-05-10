@@ -1,6 +1,23 @@
 -module(station201_shim).
 
--compile(export_all).
+-export([
+    connect_unsupported/2,
+    connect_supported/2,
+    connect_already_connected/2,
+    station_call_before_boot/2,
+    station_call_security_error/2,
+    station_call_boot/2,
+    station_call_heartbeat/2,
+    csms_call_before_boot/2,
+    csms_call_after_boot/3,
+    csms_call_set_variables/3,
+    csms_reply/3,
+    csms_reply_boot_accepted/3,
+    csms_reply_boot_pending/3,
+    csms_reply_boot_rejected/3,
+    station_reply_set_variables/3,
+    station_reply_set_variables_expired/3
+]).
 
 connect_unsupported(StationID, Versions) ->
     ocpp_station:connect(StationID, Versions).
@@ -9,65 +26,46 @@ connect_supported(StationID, Versions) ->
 connect_already_connected(StationID, Versions) ->
     ocpp_station:connect(StationID, Versions).
 
-station_rpccall_not_booted(StationID, Message) ->
+station_call_before_boot(StationID, Message) ->
     RPCCall = ocpp_rpc:call(Message, messageid()),
     ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
 
-station_rpccall_security_error(StationID, RPCCall) ->
-    ok = ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)),
-    receive
-        {ocpp, {rpcsend, ReplyBin}} ->
-            ocpp_rpc:decode('2.0.1', ReplyBin, [
-                {expected, ocpp_message:action(ocpp_rpc:payload(RPCCall))}
-            ])
-    after 100 ->
-        {error, timeout}
-    end.
+station_call_security_error(StationID, RPCCall) ->
+    ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
 
-csms_rpccall_booted(StationID, Message, MessageID) ->
-    ocpp_station:call(StationID, MessageID, Message).
+station_call_boot(StationID, RPCCall) ->
+    ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
 
-csms_rpccall_not_booted(StationID, Message) ->
+station_call_heartbeat(StationID, RPCCall) ->
+    ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
+
+csms_call_before_boot(StationID, Message) ->
     ocpp_station:call(StationID, messageid(), Message).
 
-boot(StationID, RPCCall) ->
-    ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
+csms_call_after_boot(StationID, Message, MessageID) ->
+    ocpp_station:call(StationID, MessageID, Message).
 
-accept_boot(StationID, RPCCall, Reply) ->
-    valid_reply(StationID, ocpp_rpc:id(RPCCall), Reply).
-
-pending_boot(StationID, RPCCall, Reply) ->
-    valid_reply(StationID, ocpp_rpc:id(RPCCall), Reply).
-
-reject_boot(StationID, RPCCall, Reply) ->
-    valid_reply(StationID, ocpp_rpc:id(RPCCall), Reply).
-
-heartbeat(StationID, RPCCall) ->
-    ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
-
-set_variables_request(StationID, MessageID, Request) ->
+csms_call_set_variables(StationID, MessageID, Request) ->
     ocpp_station:call(StationID, MessageID, Request).
 
-set_variables_response(StationID, RPCReply) ->
+csms_reply(StationID, MessageID, Payload) ->
+    ocpp_station:reply(StationID, MessageID, Payload).
+
+csms_reply_boot_accepted(StationID, RPCCall, Reply) ->
+    ocpp_station:reply(StationID, ocpp_rpc:id(RPCCall), Reply).
+
+csms_reply_boot_pending(StationID, RPCCall, Reply) ->
+    ocpp_station:reply(StationID, ocpp_rpc:id(RPCCall), Reply).
+
+csms_reply_boot_rejected(StationID, RPCCall, Reply) ->
+    ocpp_station:reply(StationID, ocpp_rpc:id(RPCCall), Reply).
+
+station_reply_set_variables(StationID, RPCCall, Payload) ->
+    RPCReply = ocpp_rpc:callresult(Payload, ocpp_rpc:id(RPCCall)),
     ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCReply)).
 
-set_variables_response_expired(StationID, RPCReply) ->
-    set_variables_response(StationID, RPCReply).
-
-valid_reply(StationID, MessageID, Message) ->
-    case ocpp_station:reply(StationID, MessageID, Message) of
-        ok ->
-            recv(ocpp_message:action(Message));
-        {error, _} = Error ->
-            Error
-    end.
-
-recv(Action) ->
-    receive
-        {ocpp, {rpcsend, ReplyBin}} ->
-            ocpp_rpc:decode('2.0.1', ReplyBin, [{expected, Action}])
-    after 50 -> timeout
-    end.
+station_reply_set_variables_expired(StationID, RPCCall, Payload) ->
+    station_reply_set_variables(StationID, RPCCall, Payload).
 
 messageid() ->
     integer_to_binary(erlang:unique_integer([positive]), 36).
