@@ -44,48 +44,63 @@ end).
 stale_timeout_test_() ->
     {setup, fun mock_station_manager/0, fun teardown_station_manager/1, [
         {"call timers are canceled if the station process is stopped",
-         {timeout, (?STALE_TIMEOUT div 1000) + 5, fun() ->
-            {StationID, Conn, _SPid, Client} = prepare_station(),
-            try
-                ocpp_station:stop(StationID),
-                timer:sleep(100),
-                process_flag(trap_exit, true),
-                verify_no_stale_call_timer(StationID, Conn)
-            after
-                process_flag(trap_exit, false),
-                catch ocpp_station:stop(StationID),
-                ocpp_test_client:stop(Client)
-            end
-         end}},
+            {timeout, (?STALE_TIMEOUT div 1000) + 5, fun() ->
+                {StationID, Conn, _SPid, Client} = prepare_station(),
+                try
+                    ocpp_station:stop(StationID),
+                    timer:sleep(100),
+                    process_flag(trap_exit, true),
+                    verify_no_stale_call_timer(StationID, Conn)
+                after
+                    process_flag(trap_exit, false),
+                    catch ocpp_station:stop(StationID),
+                    ocpp_test_client:stop(Client)
+                end
+            end}},
         {"call timers are canceled if the station process exits",
-         {timeout, (?STALE_TIMEOUT div 1000) + 5, fun() ->
-            {StationID, Conn, SPid, Client} = prepare_station(),
-            try
-                process_flag(trap_exit, true),
-                exit(SPid, kill),
-                receive {'EXIT', SPid, _Reason} -> ok end,
-                verify_no_stale_call_timer(StationID, Conn)
-            after
-                process_flag(trap_exit, false),
-                catch ocpp_station:stop(StationID),
-                ocpp_test_client:stop(Client)
-            end
-         end}}
+            {timeout, (?STALE_TIMEOUT div 1000) + 5, fun() ->
+                {StationID, Conn, SPid, Client} = prepare_station(),
+                try
+                    process_flag(trap_exit, true),
+                    exit(SPid, kill),
+                    receive
+                        {'EXIT', SPid, _Reason} -> ok
+                    end,
+                    verify_no_stale_call_timer(StationID, Conn)
+                after
+                    process_flag(trap_exit, false),
+                    catch ocpp_station:stop(StationID),
+                    ocpp_test_client:stop(Client)
+                end
+            end}}
     ]}.
 
 verify_no_stale_call_timer(StationID, Conn) ->
     {ok, Pid} = ocpp_station:start_link(StationID),
-    %% the existing client connection can persist because it uses the
-    %% station ID, not the Pid. {ok, Conn} =
-    %% ocpp_test_client:connect(Client, ['2.0.1']),
     Timeout = ?STALE_TIMEOUT + 1000,
     receive
         {'EXIT', Pid, Reason} ->
             error({test_failed, {station_down, Reason}})
     after Timeout ->
-        ocpp_test_client:boot_to(Conn, accepted),
-        HBR = heartbeat_request('2.0.1'),
-        ?assertMatch({ok, {callresult, _}}, ocpp_test_client:do_calls(Conn, [HBR]))
+        Version = ocpp_test_client:version(Conn),
+        ocpp_test_client:disconnect(Conn),
+        NewConn = ocpp_test_client:connect(Conn, [Version]),
+        ocpp_test_client:boot_to(NewConn, accepted),
+        {HBR_Request, HBR_Response} = heartbeat_request('2.0.1'),
+        MsgID = integer_to_binary(erlang:unique_integer([positive]), 36),
+        Call = ocpp_rpc:call(HBR_Request, MsgID),
+        ok = ocpp_test_client:do(NewConn, fun() ->
+            ok = ocpp_station:rpc(StationID, ocpp_rpc:encode(Call))
+        end),
+        ok = ocpp_station:reply(StationID, MsgID, HBR_Response),
+        Result = ocpp_test_client:do(NewConn, fun() ->
+            ocpp_rpc:decode(
+                ocpp_test_client:version(NewConn),
+                ocpp_test_client:recv(5000),
+                [{expected, ocpp_message:action(HBR_Request)}]
+            )
+        end),
+        ?assertMatch({ok, {callresult, _}}, Result)
     end.
 
 prepare_station() ->

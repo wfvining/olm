@@ -16,9 +16,7 @@ process.
 
 -export([start_link/1, start_link/2, stop/1]).
 -export([connect/2, disconnect/1, rpc/2, reply/3, call/3, callresulterror/4]).
--export([init/1, callback_mode/0]).
-%% "private" functions that need to be exported
--export([rpccall_timeout/2]).
+-export([init/1, callback_mode/0, terminate/3]).
 %% State callbacks
 -export([
     unprovisioned/3,
@@ -44,7 +42,7 @@ process.
     connection ::
         {pending, gen_statem:from(), pid()} | {ocpp:version(), pid(), reference()} | undefined,
     %% pending call from CSMS to station - awaiting response from station
-    pending_call :: {binary(), binary(), ocpp_message:message()} | undefined,
+    pending_call :: {binary(), binary(), ocpp_message:message(), ocpp_timer:timer()} | undefined,
     %% pending call from station to CSMS - awaiting response from handler
     rpc_call :: undefined | ocpp_rpc:call(),
     triggered = #{} :: #{binary() => [ocpp_message:message()]},
@@ -134,18 +132,20 @@ call(StationID, MessageID, Payload) ->
 callresulterror(StationID, MessageID, ErrorCode, Options) ->
     todo.
 
-%% called when a message timeout timer expires.
--doc false.
-rpccall_timeout(StationID, MessageID) ->
-    gen_statem:cast(?registry(StationID), {rpccall_timeout, MessageID}).
-
 callback_mode() ->
     state_functions.
+
+terminate(_Reason, _StateName, #state{pending_call = {_, _, _, TRef}}) ->
+    ocpp_timer:cancel(TRef);
+terminate(_Reason, _StateName, _State) ->
+    ok.
 
 init({StationID, _Options}) ->
     process_flag(trap_exit, true),
     {ok, unprovisioned, #state{stationid = StationID}}.
 
+unprovisioned(info, {timeout, _, {rpccall_timeout, _}}, State) ->
+    {keep_state_and_data};
 unprovisioned({call, From}, {connect, Pid, Versions}, State) ->
     do_connect(Pid, From, Versions, State, connected);
 unprovisioned({call, From}, {rpc, _, _}, _State) ->
@@ -159,6 +159,8 @@ connected(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid
         [Pid, Reason]
     ),
     {next_state, unprovisioned, State#state{connection = undefined}};
+connected(info, {timeout, _, {rpccall_timeout, _}}, State) ->
+    {keep_state_and_data};
 connected({call, From}, {connect, _, _}, _State) ->
     {keep_state_and_data, [{reply, From, {error, already_connected}}]};
 connected({call, From}, {rpc, Pid1, _}, #state{connection = {_, Pid2, _}}) when Pid1 =/= Pid2 ->
@@ -341,6 +343,8 @@ provisioning(
     end;
 provisioning({call, From}, {connect, _, _}, _) ->
     {keep_state_and_data, [{reply, From, {error, already_connected}}]};
+provisioning(info, {timeout, _, {rpccall_timeout, _}}, State) ->
+    keep_state_and_data;
 provisioning(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("Connection process ~p down before BootNotificationResponse sent~n~p", [Pid, Reason]),
     {next_state, unprovisioned, State#state{connection = undefined, rpc_call = undefined}};
@@ -350,6 +354,16 @@ provisioning({call, From}, {disconnect, Pid}, #state{connection = {_, Pid, Ref}}
         {reply, From, ok}
     ]}.
 
+boot_pending(
+    info,
+    {'DOWN', Ref, process, Pid, Reason},
+    #state{connection = {_, Pid, Ref}, pending_call = {_, _, _, TRef}} = State
+) ->
+    logger:info("Connection process ~p down while boot Pending~n~p", [Pid, Reason]),
+    ocpp_timer:cancel(TRef),
+    {next_state, unprovisioned, State#state{
+        connection = undefined, rpc_call = undefined, pending_call = undefined
+    }};
 boot_pending(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("Connection process ~p down while boot Pending~n~p", [Pid, Reason]),
     {next_state, unprovisioned, State#state{connection = undefined, rpc_call = undefined}};
@@ -400,15 +414,12 @@ boot_pending(
             {keep_state_and_data, [{reply, From, {error, {call_not_pending, MessageID}}}]}
     end;
 boot_pending(
-    cast, {rpccall_timeout, MessageID}, State = #state{pending_call = {PendingID, _, _, _}}
+    info, {timeout, TRef, {rpccall_timeout, _}}, #state{pending_call = {TRef, _, _, _}} = State
 ) ->
-    if
-        MessageID =:= PendingID ->
-            {keep_state, State#state{pending_call = undefined}};
-        MessageID =/= PendingID ->
-            keep_state_and_data
-    end.
+    {keep_state, State#state{pending_call = undefined}}.
 
+accepted(info, {timeout, _, {rpccall_timeout, _}}, State) ->
+    {keep_state_and_data};
 accepted(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("Connection process ~p down~n~p", [Pid, Reason]),
     {next_state, offline, State#state{connection = undefined, rpc_call = undefined}};
@@ -447,6 +458,8 @@ accepted(
             ]}
     end.
 
+offline(info, {timeout, _, {rpccall_timeout, _}}, State) ->
+    keep_state_and_data;
 offline({call, From}, {rpc, Pid, RPCBinary}, State) ->
     logger:warning(
         "station ~p got RPC from ~p while in 'offline' state~nRPC: ~s",
@@ -477,6 +490,8 @@ reconnecting({call, From}, {rpc, Pid, RPCBinary}, State) ->
     end;
 reconnecting({call, From}, {connect, _Pid, _Versions}, _State) ->
     {keep_state_and_data, [{reply, From, {error, already_connected}}]};
+reconnecting(info, {timeout, _, {rpccall_timeout, _}}, State) ->
+    keep_state_and_data;
 reconnecting(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("station ~p disconnected while in reconnecting state.~nReason = ~p", [
         State#state.stationid, Reason
@@ -512,8 +527,8 @@ do_rpc_call(RPC, #state{pending_call = undefined} = State) ->
     rpcsend(State#state.connection, RPC),
     Message = ocpp_rpc:payload(RPC),
     MessageID = ocpp_rpc:id(RPC),
-    {ok, TRef} = timer:apply_after(
-        State#state.message_timeout, ?MODULE, rpccall_timeout, [State#state.stationid, MessageID]
+    {ok, TRef} = ocpp_timer:set_timeout(
+        State#state.message_timeout, {rpccall_timeout, MessageID}
     ),
     {ok,
         {ok, State#state{pending_call = {MessageID, ocpp_message:action(Message), Message, TRef}}}};
@@ -543,7 +558,7 @@ handle_callresult(RPC, From, #state{pending_call = {PendingID, _, _PendingCall, 
     Message = ocpp_rpc:payload(RPC),
     case ocpp_rpc:id(RPC) of
         ID when ID =:= PendingID ->
-            timer:cancel(TRef),
+            ocpp_timer:cancel(TRef),
             process_callresult(Message, From, State);
         ID when ID =/= PendingID ->
             logger:warning(
