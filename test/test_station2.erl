@@ -45,7 +45,9 @@ stale_timeout_test_() ->
     {setup, fun mock_station_manager/0, fun teardown_station_manager/1, [
         {"call timers are canceled if the station process is stopped",
             {timeout, (?STALE_TIMEOUT div 1000) + 5, fun() ->
-                {StationID, Conn, _SPid, Client} = prepare_station([{rpccall_timeout, ?STALE_TIMEOUT}]),
+                {StationID, Conn, _SPid, Client} = prepare_station([
+                    {rpccall_timeout, ?STALE_TIMEOUT}
+                ]),
                 try
                     ocpp_station:stop(StationID),
                     timer:sleep(100),
@@ -59,7 +61,9 @@ stale_timeout_test_() ->
             end}},
         {"call timers are canceled if the station process exits",
             {timeout, (?STALE_TIMEOUT div 1000) + 5, fun() ->
-                {StationID, Conn, SPid, Client} = prepare_station([{rpccall_timeout, ?STALE_TIMEOUT}]),
+                {StationID, Conn, SPid, Client} = prepare_station([
+                    {rpccall_timeout, ?STALE_TIMEOUT}
+                ]),
                 try
                     process_flag(trap_exit, true),
                     exit(SPid, kill),

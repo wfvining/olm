@@ -148,8 +148,8 @@ init({StationID, Options}) ->
     process_flag(trap_exit, true),
     {ok, unprovisioned, #state{stationid = StationID, rpccall_timeout = CallTimeout}}.
 
-unprovisioned(info, {timeout, _, {rpccall_timeout, _}}, State) ->
-    {keep_state_and_data};
+unprovisioned(info, {timeout, _, {rpccall, _}}, _State) ->
+    keep_state_and_data;
 unprovisioned({call, From}, {connect, Pid, Versions}, State) ->
     do_connect(Pid, From, Versions, State, connected);
 unprovisioned({call, From}, {rpc, _, _}, _State) ->
@@ -163,8 +163,8 @@ connected(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid
         [Pid, Reason]
     ),
     {next_state, unprovisioned, State#state{connection = undefined}};
-connected(info, {timeout, _, {rpccall_timeout, _}}, State) ->
-    {keep_state_and_data};
+connected(info, {timeout, _, {rpccall, _}}, _State) ->
+    keep_state_and_data;
 connected({call, From}, {connect, _, _}, _State) ->
     {keep_state_and_data, [{reply, From, {error, already_connected}}]};
 connected({call, From}, {rpc, Pid1, _}, #state{connection = {_, Pid2, _}}) when Pid1 =/= Pid2 ->
@@ -347,7 +347,7 @@ provisioning(
     end;
 provisioning({call, From}, {connect, _, _}, _) ->
     {keep_state_and_data, [{reply, From, {error, already_connected}}]};
-provisioning(info, {timeout, _, {rpccall_timeout, _}}, State) ->
+provisioning(info, {timeout, _, {rpccall, _}}, _State) ->
     keep_state_and_data;
 provisioning(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("Connection process ~p down before BootNotificationResponse sent~n~p", [Pid, Reason]),
@@ -418,11 +418,11 @@ boot_pending(
             {keep_state_and_data, [{reply, From, {error, {call_not_pending, MessageID}}}]}
     end;
 boot_pending(
-    info, {timeout, TRef, {rpccall_timeout, _}}, #state{pending_call = {TRef, _, _, _}} = State
+    info, {timeout, TRef, {rpccall, _}}, #state{pending_call = {_, _, _, TRef}} = State
 ) ->
     {keep_state, State#state{pending_call = undefined}}.
 
-accepted(info, {timeout, _, {rpccall_timeout, _}}, State) ->
+accepted(info, {timeout, _, {rpccall, _}}, _State) ->
     {keep_state_and_data};
 accepted(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("Connection process ~p down~n~p", [Pid, Reason]),
@@ -462,7 +462,7 @@ accepted(
             ]}
     end.
 
-offline(info, {timeout, _, {rpccall_timeout, _}}, State) ->
+offline(info, {timeout, _, {rpccall, _}}, _State) ->
     keep_state_and_data;
 offline({call, From}, {rpc, Pid, RPCBinary}, State) ->
     logger:warning(
@@ -494,7 +494,7 @@ reconnecting({call, From}, {rpc, Pid, RPCBinary}, State) ->
     end;
 reconnecting({call, From}, {connect, _Pid, _Versions}, _State) ->
     {keep_state_and_data, [{reply, From, {error, already_connected}}]};
-reconnecting(info, {timeout, _, {rpccall_timeout, _}}, State) ->
+reconnecting(info, {timeout, _, {rpccall, _}}, _State) ->
     keep_state_and_data;
 reconnecting(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("station ~p disconnected while in reconnecting state.~nReason = ~p", [
@@ -532,7 +532,7 @@ do_rpc_call(RPC, #state{pending_call = undefined} = State) ->
     Message = ocpp_rpc:payload(RPC),
     MessageID = ocpp_rpc:id(RPC),
     {ok, TRef} = ocpp_timer:set_timeout(
-        State#state.rpccall_timeout, {rpccall_timeout, MessageID}
+        State#state.rpccall_timeout, {rpccall, MessageID}
     ),
     {ok,
         {ok, State#state{pending_call = {MessageID, ocpp_message:action(Message), Message, TRef}}}};
