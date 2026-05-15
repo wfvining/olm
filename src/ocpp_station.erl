@@ -14,7 +14,7 @@ process.
 
 -behavior(gen_statem).
 
--export([start_link/1, start_link/2, stop/1]).
+-export([start_link/1, start_link/2, stop/1, whereis/1]).
 -export([connect/2, disconnect/1, rpc/2, reply/3, call/3, callresulterror/4]).
 -export([init/1, callback_mode/0, terminate/3]).
 %% State callbacks
@@ -55,6 +55,14 @@ start_link(StationID, Options) ->
 
 start_link(StationID) ->
     start_link(StationID, []).
+
+-doc """
+Return the Pid of the station named `StationID`. If the station does
+not exist raises a `badarg` error.
+""".
+-spec whereis(StationID :: binary()) -> pid() | noproc.
+whereis(StationID) ->
+    gproc:where(?name(StationID)).
 
 -doc """
 Connect the calling process to the station. 
