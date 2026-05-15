@@ -39,13 +39,13 @@ end).
         end}
 ).
 
--define(STALE_TIMEOUT, 30000).
+-define(STALE_TIMEOUT, 2000).
 
 stale_timeout_test_() ->
     {setup, fun mock_station_manager/0, fun teardown_station_manager/1, [
         {"call timers are canceled if the station process is stopped",
             {timeout, (?STALE_TIMEOUT div 1000) + 5, fun() ->
-                {StationID, Conn, _SPid, Client} = prepare_station(),
+                {StationID, Conn, _SPid, Client} = prepare_station([{rpccall_timeout, ?STALE_TIMEOUT}]),
                 try
                     ocpp_station:stop(StationID),
                     timer:sleep(100),
@@ -59,7 +59,7 @@ stale_timeout_test_() ->
             end}},
         {"call timers are canceled if the station process exits",
             {timeout, (?STALE_TIMEOUT div 1000) + 5, fun() ->
-                {StationID, Conn, SPid, Client} = prepare_station(),
+                {StationID, Conn, SPid, Client} = prepare_station([{rpccall_timeout, ?STALE_TIMEOUT}]),
                 try
                     process_flag(trap_exit, true),
                     exit(SPid, kill),
@@ -76,7 +76,7 @@ stale_timeout_test_() ->
     ]}.
 
 verify_no_stale_call_timer(StationID, Conn) ->
-    {ok, Pid} = ocpp_station:start_link(StationID),
+    {ok, Pid} = ocpp_station:start_link(StationID, [{rpccall_timeout, ?STALE_TIMEOUT}]),
     Timeout = ?STALE_TIMEOUT + 1000,
     receive
         {'EXIT', Pid, Reason} ->
@@ -103,10 +103,10 @@ verify_no_stale_call_timer(StationID, Conn) ->
         ?assertMatch({ok, {callresult, _}}, Result)
     end.
 
-prepare_station() ->
+prepare_station(Opts) ->
     {ok, _} = application:ensure_all_started(gproc),
     StationID = station_id(),
-    {ok, SPid} = ocpp_station:start_link(StationID, []),
+    {ok, SPid} = ocpp_station:start_link(StationID, Opts),
     {ok, Client} = ocpp_test_client:start_link(StationID),
     Conn = ocpp_test_client:connect(Client, ['2.0.1']),
     ocpp_test_client:boot_to(Conn, pending),

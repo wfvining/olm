@@ -13,7 +13,7 @@
         public_key,
         gproc
     ]},
-    {env, []},
+    {env, [{rpccall_timeout, 30_000}]},
     {modules, []},
     {licenses, ["Apache-2.0"]},
     {links, []}

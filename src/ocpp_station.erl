@@ -47,7 +47,7 @@ process.
     rpc_call :: undefined | ocpp_rpc:call(),
     triggered = #{} :: #{binary() => [ocpp_message:message()]},
     %% Timeout for awaiting a response from the station [ms]
-    message_timeout = 30_000 :: pos_integer()
+    rpccall_timeout :: pos_integer()
 }).
 
 start_link(StationID, Options) ->
@@ -140,9 +140,13 @@ terminate(_Reason, _StateName, #state{pending_call = {_, _, _, TRef}}) ->
 terminate(_Reason, _StateName, _State) ->
     ok.
 
-init({StationID, _Options}) ->
+init({StationID, Options}) ->
+    DefaultTimeout = application:get_env(ocpp, rpccall_timeout, 30_000),
+    CallTimeout = proplists:get_value(
+        rpccall_timeout, Options, DefaultTimeout
+    ),
     process_flag(trap_exit, true),
-    {ok, unprovisioned, #state{stationid = StationID}}.
+    {ok, unprovisioned, #state{stationid = StationID, rpccall_timeout = CallTimeout}}.
 
 unprovisioned(info, {timeout, _, {rpccall_timeout, _}}, State) ->
     {keep_state_and_data};
@@ -528,7 +532,7 @@ do_rpc_call(RPC, #state{pending_call = undefined} = State) ->
     Message = ocpp_rpc:payload(RPC),
     MessageID = ocpp_rpc:id(RPC),
     {ok, TRef} = ocpp_timer:set_timeout(
-        State#state.message_timeout, {rpccall_timeout, MessageID}
+        State#state.rpccall_timeout, {rpccall_timeout, MessageID}
     ),
     {ok,
         {ok, State#state{pending_call = {MessageID, ocpp_message:action(Message), Message, TRef}}}};
