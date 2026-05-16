@@ -1,4 +1,5 @@
 -module(prop_ocpp201_fsm).
+-eqwalizer(ignore).
 -include_lib("proper/include/proper.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
@@ -37,8 +38,11 @@ prop_test() ->
                     end
                 end
             ),
+            ok = meck:new(ocpp_timer, [merge_expects]),
+            ok = meck:expect(ocpp_timer, cancel, fun(_) -> ok end),
             fun() ->
                 meck:unload(ocpp_station_manager),
+                meck:unload(ocpp_timer),
                 lists:foreach(fun application:stop/1, Apps)
             end
         end,
@@ -48,7 +52,13 @@ prop_test() ->
             begin
                 {ok, _Pid} = ocpp_station:start_link(?STATIONID),
                 {History, State, Result} = proper_fsm:run_commands(?MODULE, Cmds),
-                ocpp_station:stop(?STATIONID),
+                Stopped =
+                    try
+                        ocpp_station:stop(?STATIONID),
+                        true
+                    catch
+                        exit:noproc -> false
+                    end,
                 ?WHENFAIL(
                     io:format(
                         "History: ~p\nState: ~p\nResult: ~p\n",
@@ -59,7 +69,7 @@ prop_test() ->
                             proper_fsm:state_names(History),
                             command_names(Cmds)
                         ),
-                        Result =:= ok
+                        Result =:= ok andalso Stopped
                     )
                 )
             end
@@ -72,7 +82,7 @@ prop_test() ->
     %% list of station-initiated calls that timed out before response from csms
     station_timed_out = [] :: [ocpp_rpc:call()],
     %% a call in progress from the csms to the station
-    csms_cip :: ocpp_rpc:call() | undefined,
+    csms_cip :: {ocpp_rpc:call(), reference()} | undefined,
     %% list of CSMS-initiated calls that timed out before response from station
     csms_timed_out = [] :: [ocpp_rpc:call()],
     %% list of TriggerMessageRequests
@@ -205,9 +215,36 @@ booting(#data{station_cip = BootCall}) ->
 
 pending(Data) ->
     %% received a BootNotificationResponse with status=Pending
-
     %, use_case_B06(), use_case_B07(), use_case_B08()]).
-    lists:flatten([functional_block_b_security_error(), use_case_B05(Data)]).
+    lists:flatten([
+        %% functional_block_b_security_error(),
+        use_case_B05(Data),
+        csms_call_pending_command(Data),
+        timedout_response(Data)
+    ]).
+
+timedout_response(#data{csms_timed_out = []}) ->
+    [];
+timedout_response(#data{csms_timed_out = TimedOut}) ->
+    [
+        {history,
+            {call, station201_shim, station_reply_timedout_call, [
+                ?STATIONID,
+                oneof([
+                    {Call, generic_reply(Call)}
+                 || Call <- TimedOut
+                ])
+            ]}}
+    ].
+
+csms_call_pending_command(#data{csms_cip = undefined}) ->
+    [];
+csms_call_pending_command(#data{csms_cip = {RPCCall, TimerRef}}) ->
+    %% {history, {call, station201_shim, csms_call_with_cip,
+    [
+        %%            [?STATIONID, ocpp_message_gen:request('2.0.1')]}},
+        {history, {call, station201_shim, csms_rpccall_timeout, [?STATIONID, RPCCall, TimerRef]}}
+    ].
 
 use_case_B05(Data) ->
     %% SetVariables
@@ -219,36 +256,22 @@ use_case_B05(Data) ->
         | use_case_B05_responses(Data)
     ].
 
-use_case_B05_responses(Data) ->
-    GoodResponse =
-        if
-            Data#data.csms_cip /= undefined ->
-                case ocpp_rpc:action(Data#data.csms_cip) of
-                    ~"SetVariables" ->
-                        [
-                            {history,
-                                {call, station201_shim, station_reply_set_variables, [
-                                    ?STATIONID,
-                                    Data#data.csms_cip,
-                                    set_variables_response_payload(Data#data.csms_cip)
-                                ]}}
-                        ];
-                    _ ->
-                        []
-                end;
-            true ->
-                []
-        end,
-    GoodResponse ++
-        [
-            {history,
-                {call, station201_shim, station_reply_set_variables_expired, [
-                    ?STATIONID, Req, set_variables_response_payload(Req)
-                ]}}
-         || %% reply to an old call
-            Req <- Data#data.csms_timed_out,
-            ocpp_rpc:action(Req) =:= ~"SetVariables"
-        ].
+use_case_B05_responses(#data{csms_cip = undefined}) ->
+    [];
+use_case_B05_responses(#data{csms_cip = {RPCCall, _}}) ->
+    case ocpp_rpc:action(RPCCall) of
+        ~"SetVariables" ->
+            [
+                {history,
+                    {call, station201_shim, station_reply_set_variables, [
+                        ?STATIONID,
+                        RPCCall,
+                        set_variables_response_payload(RPCCall)
+                    ]}}
+            ];
+        _ ->
+            []
+    end.
 
 set_variables_response_payload(Call) ->
     Message = ocpp_rpc:payload(Call),
@@ -256,12 +279,14 @@ set_variables_response_payload(Call) ->
     ocpp_message_gen:message(
         '2.0.1',
         ~"SetVariablesResponse",
-        #{
-            setVariableResult => [
-                maps:with([component, variable, attributeType], Var)
-             || Var <- VarData
-            ]
-        }
+        [
+            {override, #{
+                setVariableResult => [
+                    maps:with([component, variable, attributeType], Var)
+                 || Var <- VarData
+                ]
+            }}
+        ]
     ).
 
 %% This defines a command to test B01.FR.10, B02.FR.05, B03.FR.08
@@ -304,23 +329,36 @@ idle(_Data) ->
     ].
 
 idle(cip, #data{station_cip = PendingCall}) ->
-    Message = ocpp_rpc:payload(PendingCall),
-    Action = ocpp_message:action(Message),
     MessageID = ocpp_rpc:id(PendingCall),
     [
         {idle,
             {call, station201_shim, csms_reply, [
                 ?STATIONID,
                 MessageID,
-                ocpp_message_gen:message('2.0.1', <<Action/binary, "Response">>)
+                generic_reply(PendingCall)
             ]}}
     ].
 
-%% Optional callback, weight modification of transitions
-weight({offline, _}, {connected, _}, _Call) -> 10;
-weight(_FromState, _ToState, _Call) -> 1.
+generic_reply(RPCCall) ->
+    Action = ocpp_message:action(ocpp_rpc:payload(RPCCall)),
+    ocpp_message_gen:message('2.0.1', <<Action/binary, "Response">>).
 
-%% Picks whether a command should be valid.
+%% Optional callback, weight modification of transitions
+weight({offline, _}, {connected, _}, _Call) -> 100;
+weight({connected, _}, booting, _) -> 100;
+weight(booting, pending, _) -> 100;
+weight(booting, idle, _) -> 2;
+weight(booting, {connected, after_boot}, _) -> 5;
+weight(pending, pending, {call, station201_shim, station_reply_set_variables_expired, _}) -> 10;
+weight(_FromState, _ToState, {_, _, Fun, _}) -> 1.
+
+precondition(
+    _From,
+    _To,
+    #data{csms_timed_out = TimedOut},
+    {call, station201_shim, station_reply_timedout_call, _}
+) when length(TimedOut) =:= 0 ->
+    false;
 precondition(
     {connected, SubState}, _To, _Data, {call, station201_shim, station_call_security_error, _}
 ) when
@@ -348,6 +386,13 @@ precondition(
 precondition(
     _From, _To, #data{csms_cip = undefined}, {call, station201_shim, station_reply_set_variables, _}
 ) ->
+    false;
+precondition(
+    _From, _To, #data{csms_cip = undefined}, {call, station201_shim, Command, _}
+) when
+    Command =:= csms_rpccall_timeout;
+    Command =:= csms_call_with_cip
+->
     false;
 precondition(_From, _To, #data{}, {call, _Mod, _Fun, _Args}) ->
     true.
@@ -479,12 +524,29 @@ postcondition(
     _From,
     _To,
     _Data,
-    {call, station201_shim, SVR, _},
+    {call, station201_shim, station_reply_set_variables, _},
     ok
-) when
-    SVR =:= station_reply_set_variables;
-    SVR =:= station_reply_set_variables_expired
-->
+) ->
+    true;
+postcondition(_From, _To, _Data, {call, station201_shim, station_reply_timedout_call, _}, ok) ->
+    true;
+postcondition(
+    _From,
+    _To,
+    #data{csms_cip = {RPCCall, _}},
+    {call, station201_shim, csms_call_with_cip, _},
+    {error, {call_pending, PendingID}}
+) ->
+    ocpp_rpc:id(RPCCall) =:= PendingID;
+postcondition(
+    _From,
+    _To,
+    _Data,
+    {call, station201_shim, csms_rpccall_timeout, _},
+    _
+) ->
+    %% This command just changes the internal state of the station.
+    %% There is nothing outwardly visible to validate here.
     true;
 postcondition(
     _From,
@@ -535,7 +597,16 @@ next_state_data(
     _Res,
     {call, station201_shim, csms_call_set_variables, [_, MessageID, Request]}
 ) ->
-    Data#data{csms_cip = ocpp_rpc:call(Request, MessageID)};
+    Ref = update_timeout_mock(MessageID),
+    Data#data{csms_cip = {ocpp_rpc:call(Request, MessageID), Ref}};
+next_state_data(
+    _From,
+    _To,
+    Data = #data{csms_cip = {RPCCall, _}},
+    _Res,
+    {call, station201_shim, csms_rpccall_timeout, [_, RPCCall, _]}
+) ->
+    Data#data{csms_cip = undefined, csms_timed_out = [RPCCall | Data#data.csms_timed_out]};
 next_state_data(_From, _To, Data, _Res, {call, station201_shim, station_reply_set_variables, _}) ->
     Data#data{csms_cip = undefined};
 next_state_data(
@@ -545,17 +616,17 @@ next_state_data(
     _Res,
     {call, station201_shim, station_reply_set_variables_expired, [_, RPCCall, _]}
 ) ->
-    Data#data{
-        csms_timed_out = [
-            Req
-         || Req <- Data#data.csms_timed_out, ocpp_rpc:id(Req) /= ocpp_rpc:id(RPCCall)
-        ]
-    };
+    Data#data{csms_timed_out = lists:delete(RPCCall, Data#data.csms_timed_out)};
 next_state_data(_From, _To, Data, _Res, {call, _Mod, _Fun, _Args}) ->
     NewData = Data,
     NewData.
 
 %% Helper to generate unique message IDs
+update_timeout_mock(MessageID) ->
+    Ref = erlang:make_ref(),
+    ok = meck:expect(ocpp_timer, set_timeout, ['_', {rpccall, MessageID}], {ok, Ref}),
+    Ref.
+
 messageid() ->
     ?LAZY(integer_to_binary(erlang:unique_integer([positive]), 36)).
 

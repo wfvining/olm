@@ -11,12 +11,16 @@
     csms_call_before_boot/2,
     csms_call_after_boot/3,
     csms_call_set_variables/3,
+    csms_rpccall_timeout/3,
     csms_reply/3,
     csms_reply_boot_accepted/3,
     csms_reply_boot_pending/3,
     csms_reply_boot_rejected/3,
-    station_reply_set_variables/3,
-    station_reply_set_variables_expired/3
+    station_reply/2,
+    station_reply/3,
+    station_reply_timedout_call/2,
+    station_reply_timedout_call/3,
+    station_reply_set_variables/3
 ]).
 
 connect_unsupported(StationID, Versions) ->
@@ -48,6 +52,10 @@ csms_call_after_boot(StationID, Message, MessageID) ->
 csms_call_set_variables(StationID, MessageID, Request) ->
     ocpp_station:call(StationID, MessageID, Request).
 
+csms_rpccall_timeout(StationID, RPCCall, TimerRef) ->
+    Pid = ocpp_station:whereis(StationID),
+    Pid ! {timeout, TimerRef, {rpccall, ocpp_rpc:id(RPCCall)}}.
+
 csms_reply(StationID, MessageID, Payload) ->
     ocpp_station:reply(StationID, MessageID, Payload).
 
@@ -60,12 +68,22 @@ csms_reply_boot_pending(StationID, RPCCall, Reply) ->
 csms_reply_boot_rejected(StationID, RPCCall, Reply) ->
     ocpp_station:reply(StationID, ocpp_rpc:id(RPCCall), Reply).
 
+station_reply_timedout_call(StationID, {RPCCall, Payload}) ->
+    station_reply_timedout_call(StationID, RPCCall, Payload).
+
+station_reply_timedout_call(StationID, RPCCall, Payload) ->
+    station_reply(StationID, RPCCall, Payload).
+
+station_reply(StationID, {RPCCall, Payload}) ->
+    station_reply(StationID, RPCCall, Payload).
+
+station_reply(StationID, RPCCall, Payload) ->
+    ID = ocpp_rpc:id(RPCCall),
+    ocpp_station:rpc(StationID, ocpp_rpc:encode(ocpp_rpc:callresult(Payload, ID))).
+
 station_reply_set_variables(StationID, RPCCall, Payload) ->
     RPCReply = ocpp_rpc:callresult(Payload, ocpp_rpc:id(RPCCall)),
     ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCReply)).
-
-station_reply_set_variables_expired(StationID, RPCCall, Payload) ->
-    station_reply_set_variables(StationID, RPCCall, Payload).
 
 messageid() ->
     integer_to_binary(erlang:unique_integer([positive]), 36).

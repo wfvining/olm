@@ -591,8 +591,10 @@ process_callresult(Message, From, #state{pending_call = {_, _, PendingCall, _}} 
                     triggered = maybe_add_triggered(Message, PendingCall, State#state.triggered)
                 },
                 [{reply, From, ok}]};
+        %% TODO special handling for Report and Get/Set Variables messages
         _ ->
-            todo
+            %% TODO dispatch to handler
+            {keep_state, State#state{pending_call = undefined}, [{reply, From, ok}]}
     end.
 
 %% Handle CALL messages that arrive while in pending state. This is basically just a
