@@ -144,7 +144,13 @@ connected(before_boot, _Data) ->
             {call, station201_shim, csms_call_before_boot, [
                 ?STATIONID,
                 ocpp_message_gen:request('2.0.1')
-            ]}}
+            ]}},
+        {history,
+            {call, station201_shim, connect_already_connected, [
+                ?STATIONID,
+                ?LET(Vsns, list(oneof(['1.6', '2.1', '2.0.1'])), shuffle(['2.0.1' | Vsns]))
+            ]}},
+        {{offline, before_boot}, {call, station201_shim, station_disconnect, [?STATIONID]}}
     ];
 connected(accepted, _Data) ->
     %% booted and accepted
@@ -157,6 +163,12 @@ connected(after_boot, _Data) ->
             {call, station201_shim, csms_call_after_boot, [
                 ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
             ]}},
+        {history,
+            {call, station201_shim, connect_already_connected, [
+                ?STATIONID,
+                ?LET(Vsns, list(oneof(['1.6', '2.1', '2.0.1'])), shuffle(['2.0.1' | Vsns]))
+            ]}},
+        {{offline, after_boot}, {call, station201_shim, station_disconnect, [?STATIONID]}},
         {booting,
             {call, station201_shim, station_call_boot, [
                 ?STATIONID,
@@ -349,8 +361,15 @@ generic_reply(RPCCall) ->
 weight({offline, _}, {connected, _}, _Call) -> 100;
 weight({connected, _}, booting, _) -> 100;
 weight(booting, pending, _) -> 100;
+weight({connected, before_boot}, {connected, before_boot}, {call, station201_shim, station_call_before_boot, _}) -> 10;
+weight({connected, before_boot}, {connected, before_boot}, {call, station201_shim, csms_call_before_boot, _}) -> 10;
+weight({connected, after_boot}, {connected, after_boot}, {call, station201_shim, csms_call_after_boot, _}) -> 15;
+weight({connected, after_boot}, {connected, after_boot}, {call, station201_shim, station_call_security_error, _}) -> 15;
+weight({connected, _}, {connected, _}, {call, station201_shim, connect_already_connected, _}) -> 10;
+weight({connected, _}, {offline, _}, {call, station201_shim, station_disconnect, _}) -> 5;
 weight(booting, idle, _) -> 2;
-weight(booting, {connected, after_boot}, _) -> 5;
+weight(booting, {connected, after_boot}, _) -> 20;
+weight(booting, {connected, before_boot}, {call, station201_shim, station_call_before_boot, _}) -> 8;
 weight(pending, pending, {call, station201_shim, station_reply_set_variables_expired, _}) -> 10;
 weight(_FromState, _ToState, _) -> 1.
 
@@ -364,11 +383,11 @@ precondition(
 precondition(
     {connected, SubState}, _To, _Data, {call, station201_shim, station_call_security_error, _}
 ) when
-    SubState =/= before_boot
+    SubState =:= before_boot; SubState =:= accepted
 ->
     false;
 precondition(From, _To, _Data, {call, station201_shim, station_call_security_error, _}) when
-    From =/= pending
+    From =/= pending, From =/= {connected, after_boot}
 ->
     false;
 precondition(
@@ -444,6 +463,22 @@ postcondition(
     From =:= {connected, before_boot}; From =:= booting
 ->
     refute_rpcsend();
+postcondition(
+    {connected, _},
+    {connected, _},
+    _Data,
+    {call, station201_shim, connect_already_connected, _},
+    {error, already_connected}
+) ->
+    true;
+postcondition(
+    {connected, SubState},
+    {offline, SubState},
+    _Data,
+    {call, station201_shim, station_disconnect, _},
+    ok
+) ->
+    true;
 postcondition(
     _From,
     _To,
@@ -619,6 +654,14 @@ next_state_data(
     {call, station201_shim, station_reply_set_variables_expired, [_, RPCCall, _]}
 ) ->
     Data#data{csms_timed_out = lists:delete(RPCCall, Data#data.csms_timed_out)};
+next_state_data(
+    {connected, SubState},
+    {offline, SubState},
+    Data,
+    _Res,
+    {call, station201_shim, station_disconnect, _}
+) ->
+    Data#data{station_cip = undefined, csms_cip = undefined};
 next_state_data(_From, _To, Data, _Res, {call, _Mod, _Fun, _Args}) ->
     NewData = Data,
     NewData.
