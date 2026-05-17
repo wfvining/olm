@@ -638,10 +638,13 @@ handle_call_pending(RPC, From, #state{connection = {Version, _, _}} = State) ->
     Message = ocpp_rpc:payload(RPC),
     case ocpp_message:action(Message) of
         <<"BootNotification">> ->
-            %% new BootNotificaionRequest means we can reset to the start of provisioning.
-            {next_state, connected, clear_trigger(<<"BootNotification">>, Message, State), [
-                postpone
-            ]};
+            Payload = ocpp_rpc:payload(RPC),
+            ocpp_handler:rpc_call(
+                State#state.stationid, ocpp_message:type(Payload), ocpp_rpc:id(RPC), Payload
+            ),
+            {next_state, provisioning,
+                clear_trigger(<<"BootNotification">>, Message, State#state{rpc_call = RPC}),
+                [{reply, From, ok}]};
         Action when is_map_key(Action, State#state.triggered) ->
             handle_call(RPC, From, State);
         _ when Version =:= '1.6' ->
