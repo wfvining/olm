@@ -46,7 +46,7 @@ station_call_heartbeat(StationID, RPCCall) ->
 csms_call_before_boot(StationID, Message) ->
     ocpp_station:call(StationID, messageid(), Message).
 
-csms_call_after_boot(StationID, Message, MessageID) ->
+csms_call_after_boot(StationID, MessageID, Message) ->
     ocpp_station:call(StationID, MessageID, Message).
 
 csms_call_set_variables(StationID, MessageID, Request) ->

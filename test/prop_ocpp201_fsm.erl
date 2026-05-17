@@ -155,7 +155,7 @@ connected(after_boot, _Data) ->
         functional_block_b_security_error(),
         {history,
             {call, station201_shim, csms_call_after_boot, [
-                ?STATIONID, ocpp_message_gen:request('2.0.1'), messageid()
+                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
             ]}},
         {booting,
             {call, station201_shim, station_call_boot, [
@@ -350,7 +350,7 @@ weight(booting, pending, _) -> 100;
 weight(booting, idle, _) -> 2;
 weight(booting, {connected, after_boot}, _) -> 5;
 weight(pending, pending, {call, station201_shim, station_reply_set_variables_expired, _}) -> 10;
-weight(_FromState, _ToState, {_, _, Fun, _}) -> 1.
+weight(_FromState, _ToState, _) -> 1.
 
 precondition(
     _From,
