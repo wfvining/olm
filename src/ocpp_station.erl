@@ -448,9 +448,22 @@ accepted({call, From}, {rpc, Pid, RPCBinary}, State) ->
                 "got RPC from process that is not connected to station ~p~nRPC: ~s",
                 [State#state.stationid, RPCBinary]
             ),
-            {keep_state_and_data, [{reply, From, {error, not_connected}}]}
-        %% TODO callerror/callresulterror
-        %% TODO send
+            {keep_state_and_data, [{reply, From, {error, not_connected}}]};
+        {ok, {callerror, _}} ->
+            {keep_state_and_data, [{reply, From, ok}]};
+        {ok, {callresulterror, _}} ->
+            {keep_state_and_data, [{reply, From, ok}]};
+        {ok, {send, Send}} ->
+            handle_call(Send, From, State);
+        {error, {unknown_action, ID}} ->
+            logger:info("CALLRESULT for unknown action ~p dropped", [ID]),
+            {keep_state_and_data, [{reply, From, ok}]};
+        {error, {callerror, _}} ->
+            {keep_state_and_data, [{reply, From, ok}]};
+        {error, {callresulterror, _}} ->
+            {keep_state_and_data, [{reply, From, ok}]};
+        {error, {error, _}} ->
+            {keep_state_and_data, [{reply, From, ok}]}
     end;
 accepted(
     {call, From}, {send, {callresult, MessageID, Message}}, #state{rpc_call = PendingCall} = State
@@ -499,8 +512,24 @@ reconnecting({call, From}, {rpc, Pid, RPCBinary}, State) ->
                 "got RPC from process that is not connected to station ~p~nRPC: ~s",
                 [State#state.stationid, RPCBinary]
             ),
-            {keep_state_and_data, [{reply, From, {error, not_connected}}]}
-        %% TODO other RPC types
+            {keep_state_and_data, [{reply, From, {error, not_connected}}]};
+        {ok, {callresult, _}} ->
+            {keep_state_and_data, [{reply, From, ok}]};
+        {ok, {callerror, _}} ->
+            {keep_state_and_data, [{reply, From, ok}]};
+        {ok, {callresulterror, _}} ->
+            {keep_state_and_data, [{reply, From, ok}]};
+        {ok, {send, _}} ->
+            {keep_state_and_data, [{reply, From, ok}]};
+        {error, {unknown_action, ID}} ->
+            logger:info("CALLRESULT for unknown action ~p dropped", [ID]),
+            {keep_state_and_data, [{reply, From, ok}]};
+        {error, {callerror, _}} ->
+            {keep_state_and_data, [{reply, From, ok}]};
+        {error, {callresulterror, _}} ->
+            {keep_state_and_data, [{reply, From, ok}]};
+        {error, {error, _}} ->
+            {keep_state_and_data, [{reply, From, ok}]}
     end;
 reconnecting({call, From}, {connect, _Pid, _Versions}, _State) ->
     {keep_state_and_data, [{reply, From, {error, already_connected}}]};
