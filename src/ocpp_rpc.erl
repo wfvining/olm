@@ -288,35 +288,35 @@ decode_request(Type, Version, ID, Action, Payload) when is_binary(Action), is_ma
             {ok, {call, #rpccall{id = ID, action = Action, payload = Message}}};
         {ok, Message} when Type =:= send ->
             {ok, {send, #rpcsend{id = ID, action = Action, payload = Message}}};
-        {error, {badvalue, {extra_key, Key}}} ->
+        {error, {property_error, {illegal_properties, Keys}}} ->
             {error,
                 {callerror, #rpccallerror{
                     code = 'OccurenceConstraintViolation',
                     id = ID,
-                    description = <<"unallowed property found in payload">>,
-                    data = #{<<"invalidKey">> => Key}
+                    description = <<"unallowed properties found in payload">>,
+                    data = #{<<"invalidProperties">> => Keys}
                 }}};
-        {error, {badvalue, _Reason}} ->
-            {error,
-                {callerror, #rpccallerror{
-                    code = 'PropertyConstraintViolation',
-                    id = ID,
-                    description = <<"invalid value in payload">>
-                }}};
-        {error, {badtype, _Reason}} ->
-            {error,
-                {callerror, #rpccallerror{
-                    code = 'TypeConstraintViolation',
-                    id = ID,
-                    description = <<"invalid type in payload">>
-                }}};
-        {error, {missing_keys, Missing}} ->
+        {error, {property_error, {missing_properties, Missing}}} ->
             {error,
                 {callerror, #rpccallerror{
                     code = 'OccurenceConstraintViolation',
                     id = ID,
                     description = <<"payload missing required properties">>,
                     data = #{<<"missingProperties">> => Missing}
+                }}};
+        {error, {value_error, _Reason}} ->
+            {error,
+                {callerror, #rpccallerror{
+                    code = 'PropertyConstraintViolation',
+                    id = ID,
+                    description = <<"invalid value in payload">>
+                }}};
+        {error, {type_error, _Reason}} ->
+            {error,
+                {callerror, #rpccallerror{
+                    code = 'TypeConstraintViolation',
+                    id = ID,
+                    description = <<"invalid type in payload">>
                 }}}
     end;
 decode_request(_, _, ID, Action, _) when not is_binary(Action) ->
@@ -339,30 +339,30 @@ decode_result(Version, ID, Payload, ExpectedAction) when is_map(Payload) ->
     case ocpp_message:decode(Version, <<ExpectedAction/binary, "Response">>, Payload) of
         {ok, Message} ->
             {ok, {callresult, #rpccallresult{id = ID, payload = Message}}};
-        {error, {missing_keys, Missing}} ->
+        {error, {property_error, {missing_properties, Missing}}} ->
             {error,
                 {ErrorTag, #rpccallresulterror{
                     code = 'OccurenceConstraintViolation',
                     id = ID,
-                    description = <<"Missing required properties">>,
+                    description = <<"payload missing required properties">>,
                     data = #{<<"missingProperties">> => Missing}
                 }}};
-        {error, {badvalue, {extra_key, Key}}} ->
+        {error, {property_error, {illegal_properties, Keys}}} ->
             {error,
                 {ErrorTag, #rpccallresulterror{
                     code = 'OccurenceConstraintViolation',
                     id = ID,
-                    description = <<"unallowed property found in payload">>,
-                    data = #{<<"invalidKey">> => Key}
+                    description = <<"unallowed properties found in payload">>,
+                    data = #{<<"invalidKeys">> => Keys}
                 }}};
-        {error, {badvalue, _Reason}} ->
+        {error, {value_error, _Reason}} ->
             {error,
                 {ErrorTag, #rpccallresulterror{
                     code = 'PropertyConstraintViolation',
                     id = ID,
                     description = <<"invalid value in payload">>
                 }}};
-        {error, {badtype, _}} ->
+        {error, {type_error, _}} ->
             {error,
                 {ErrorTag, #rpccallresulterror{
                     code = 'TypeConstraintViolation',
