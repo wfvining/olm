@@ -425,15 +425,7 @@ postcondition(
 ) ->
     true;
 postcondition(
-    {connected, before_boot},
-    {connected, before_boot},
-    _Data,
-    {call, station201_shim, station_call_before_boot, _},
-    ok
-) ->
-    refute_rpcsend();
-postcondition(
-    booting,
+    _From,
     {connected, before_boot},
     _Data,
     {call, station201_shim, station_call_before_boot, _},
