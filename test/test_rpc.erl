@@ -521,3 +521,18 @@ encode_callresult_test_() ->
             ocpp_rpc:decode('2.0.1', Encoded, [{expected, <<"BootNotification">>}])
         )
     end}.
+decode_callresult_unknown_action_test_() ->
+    [
+        {
+            "(" ++ atom_to_list(Version) ++
+                ") CALLRESULT decode returns {error, {unknow_action, ID}}, when {expected, Action} is not specified",
+            ?_test(
+                %% ClearCacheResponse
+                ?assertEqual(
+                    {error, {unknown_action, ~"id"}},
+                    ocpp_rpc:decode(Version, ~'[3,"id",{"status":"Accepted"}]', [])
+                )
+            )
+        }
+     || Version <- ['1.6', '2.0.1', '2.1']
+    ].

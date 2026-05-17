@@ -67,6 +67,7 @@ information, in the form of a `t:callerror()` or a
     | {ok, {callresulterror, callresulterror()}}
     | {ok, {callerror, callerror()}}
     | {ok, {send, send()}}
+    | {error, {unknown_action, binary()}}
     | {error, {callresulterror, callresulterror()}}
     | {error, {callerror, callerror()}}
     | {error, {error, callerror() | callresulterror()}}.
@@ -91,10 +92,12 @@ decode(Version, RPCBinary, Options) ->
                 }}};
         [3, ID, Payload] ->
             case validate_message_id(ID) of
-                {ok, ID} ->
+                {ok, ID} when ExpectedAction =/= undefined ->
                     decode_result(
                         Version, ID, Payload, ExpectedAction
                     );
+                {ok, ID} ->
+                    {error, {unknown_action, ID}};
                 {error, _} when Version =:= '2.1' ->
                     {error,
                         {callresulterror, #rpccallresulterror{
@@ -327,16 +330,6 @@ decode_request(_, _, ID, _, Payload) when not is_map(Payload) ->
             code = 'ProtocolError', id = ID, description = <<"Payload is not an object">>
         }}}.
 
-decode_result(Version, ID, _, undefined) ->
-    ErrorTag =
-        if
-            Version =:= '2.1' -> callresulterror;
-            true -> error
-        end,
-    {error,
-        {ErrorTag, #rpccallresulterror{
-            code = 'InternalError', id = ID, description = <<"Result action unknown">>, data = #{}
-        }}};
 decode_result(Version, ID, Payload, ExpectedAction) when is_map(Payload) ->
     ErrorTag =
         if
