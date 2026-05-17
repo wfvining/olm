@@ -390,6 +390,9 @@ boot_pending({call, From}, {rpc, Pid, RPCBinary}, State) ->
             handle_call_pending(RPC, From, State);
         {ok, {callresult, RPC}} ->
             handle_callresult(RPC, From, State);
+        {error, {unknown_action, ID}} ->
+            logger:info("RPCREPLY to ~p dropped because no CALL is pending", [ID]),
+            {keep_state_and_data, [{reply, From, ok}]};
         {error, not_connected} ->
             logger:warning(
                 "got RPC from process that is not connected to station ~p~nRPC: ~s",
@@ -397,6 +400,7 @@ boot_pending({call, From}, {rpc, Pid, RPCBinary}, State) ->
             ),
             {keep_state_and_data, [{reply, From, {error, not_connected}}]};
         Reason ->
+            %% TODO construct an appropriate error message and return it to the connection process
             error({shit, RPCBinary, Reason})
     end;
 boot_pending({call, From}, {send, {call, MessageID, Message}}, State) ->
@@ -560,11 +564,15 @@ decode_rpc(RPCBinary, Pid, _) ->
     {error, not_connected}.
 
 handle_callresult(RPC, From, #state{pending_call = undefined}) ->
-    logger:info("got CALLRESULT (ID = ~p) but there is no pending call~n~p", [
-        ocpp_rpc:id(RPC), ocpp_rpc:payload(RPC)
-    ]),
+    logger:info(
+        "got CALLRESULT (ID = ~p) but there is no pending call~n"
+        "message dropped~n~p",
+        [
+            ocpp_rpc:id(RPC), ocpp_rpc:payload(RPC)
+        ]
+    ),
     {keep_state_and_data, [
-        {reply, From, {error, call_dropped}}
+        {reply, From, ok}
     ]};
 handle_callresult(RPC, From, #state{pending_call = {PendingID, _, _PendingCall, TRef}} = State) ->
     Message = ocpp_rpc:payload(RPC),
@@ -578,7 +586,7 @@ handle_callresult(RPC, From, #state{pending_call = {PendingID, _, _PendingCall, 
                 [ID, PendingID]
             ),
             {keep_state_and_data, [
-                {reply, From, {error, call_dropped}}
+                {reply, From, ok}
             ]}
     end.
 
