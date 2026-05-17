@@ -4,6 +4,8 @@
     connect_unsupported/2,
     connect_supported/2,
     connect_already_connected/2,
+    station_disconnect/1,
+    rpc_not_connected/2,
     station_call_before_boot/2,
     station_call_security_error/2,
     station_call_boot/2,
@@ -12,6 +14,7 @@
     csms_call_after_boot/3,
     csms_call_set_variables/3,
     csms_call_with_cip/3,
+    csms_call_trigger_message/3,
     csms_rpccall_timeout/3,
     csms_reply/3,
     csms_reply_boot_accepted/3,
@@ -30,6 +33,12 @@ connect_supported(StationID, Versions) ->
     ocpp_station:connect(StationID, Versions).
 connect_already_connected(StationID, Versions) ->
     ocpp_station:connect(StationID, Versions).
+
+station_disconnect(StationID) ->
+    ocpp_station:disconnect(StationID).
+
+rpc_not_connected(StationID, RPCBinary) ->
+    ocpp_station:rpc(StationID, RPCBinary).
 
 station_call_before_boot(StationID, Message) ->
     RPCCall = ocpp_rpc:call(Message, messageid()),
@@ -54,6 +63,9 @@ csms_call_set_variables(StationID, MessageID, Request) ->
     ocpp_station:call(StationID, MessageID, Request).
 
 csms_call_with_cip(StationID, MessageID, Request) ->
+    ocpp_station:call(StationID, MessageID, Request).
+
+csms_call_trigger_message(StationID, MessageID, Request) ->
     ocpp_station:call(StationID, MessageID, Request).
 
 csms_rpccall_timeout(StationID, RPCCall, TimerRef) ->
