@@ -202,7 +202,7 @@ connected(
                         [State#state.stationid, MessageType, ocpp_rpc:id(RPCCall)]
                     ),
                     {keep_state_and_data, [
-                        {reply, From, {error, not_provisioned}}
+                        {reply, From, ok}
                     ]};
                 MessageType when State#state.has_booted ->
                     logger:warning(
@@ -227,15 +227,14 @@ connected(
                 "~p got unexpected RPC message before provisioning~nMessage = ~p",
                 [State#state.stationid, Message]
             ),
-            {keep_state_and_data, [{reply, From, {error, not_provisioned}}]};
+            {keep_state_and_data, [{reply, From, ok}]};
         {error, {_, Reason}} ->
             logger:warning(
                 "~p got unexpected/invalid RPC message before provisioning.~n"
                 "Message = ~p~nReason = ~p",
                 [State#state.stationid, RPCBinary, Reason]
             ),
-            % {keep_state_and_data, [{reply, From, {error, Reason}}]}
-            {keep_state_and_data, [{reply, From, {error, not_provisioned}}]}
+            {keep_state_and_data, [{reply, From, ok}]}
     end;
 connected({call, From}, {send, _}, _) ->
     {keep_state_and_data, [{reply, From, {error, not_provisioned}}]};
@@ -277,14 +276,14 @@ provisioning({call, From}, {rpc, Pid, RPCBinary}, State = #state{rpc_call = Pend
                         [MessageID]
                     ),
                     {keep_state_and_data, [
-                        {reply, From, {error, duplicate_message}}
+                        {reply, From, ok}
                     ]};
                 MessageType ->
                     logger:warning(
                         "~p got unexpected ~p message before provisioning (MessageID = ~p)",
                         [State#state.stationid, MessageType, ocpp_rpc:id(RPCCall)]
                     ),
-                    {keep_state_and_data, [{reply, From, {error, not_provisioned}}]}
+                    {keep_state_and_data, [{reply, From, ok}]}
             end;
         {ok, {callresult, CallResult}} ->
             logger:warning(
@@ -298,7 +297,7 @@ provisioning({call, From}, {rpc, Pid, RPCBinary}, State = #state{rpc_call = Pend
                     ocpp_rpc:payload(CallResult)
                 ]
             ),
-            {keep_state_and_data, [{reply, From, {error, not_provisioned}}]};
+            {keep_state_and_data, [{reply, From, ok}]};
         {error, not_connected} ->
             logger:warning(
                 "got RPC from process that is not connected to station ~p~nRPC: ~s",
@@ -311,8 +310,7 @@ provisioning({call, From}, {rpc, Pid, RPCBinary}, State = #state{rpc_call = Pend
                 "Message = ~p~nReason = ~p",
                 [State#state.stationid, RPCBinary, Reason]
             ),
-            %% {keep_state_and_data, [{reply, From, {error, Reason}}]}
-            {keep_state_and_data, [{reply, From, {error, not_provisioned}}]}
+            {keep_state_and_data, [{reply, From, ok}]}
     end;
 provisioning({call, From}, {send, {call, _, _}}, State) ->
     {keep_state_and_data, [{reply, From, {error, not_provisioned}}]};
@@ -625,7 +623,7 @@ handle_call_pending(RPC, From, #state{connection = {Version, _, _}} = State) ->
                 [RPC]
             ),
             %% The 1.6 spec does not require an error response.
-            {keep_state_and_data, [{reply, From, {error, not_provisioned}}]};
+            {keep_state_and_data, [{reply, From, ok}]};
         _ ->
             logger:error(
                 "OCPP SecurityError~n"

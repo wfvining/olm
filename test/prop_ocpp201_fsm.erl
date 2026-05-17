@@ -429,17 +429,17 @@ postcondition(
     {connected, before_boot},
     _Data,
     {call, station201_shim, station_call_before_boot, _},
-    {error, not_provisioned}
+    ok
 ) ->
-    true;
+    refute_rpcsend();
 postcondition(
     booting,
     {connected, before_boot},
     _Data,
     {call, station201_shim, station_call_before_boot, _},
-    {error, not_provisioned}
+    ok
 ) ->
-    true;
+    refute_rpcsend();
 postcondition(
     From,
     From,

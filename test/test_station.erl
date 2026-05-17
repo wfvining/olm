@@ -498,7 +498,7 @@ provision_station_client_test_() ->
                             ?testStationID,
                             ~B<[2,"0","Authorize",{"idToken":{"idToken":"","type":"NoAuthorization"}}]>
                         ),
-                        {error, not_provisioned}
+                        ok
                     ),
                     ?_stationTest(
                         "start provisioning by sending a BootNotificationRequest",
@@ -529,7 +529,7 @@ provision_station_client_test_() ->
                         %% status is not Accepted." That seems to imply
                         %% disallowed messages prior to sending a
                         %% BootNotificationResponse should simply be dropped.
-                        {error, not_provisioned}
+                        ok
                     ),
                     ?_stationTest(
                         "respond to BootNotificationRequest with status='Pending'",
@@ -1513,8 +1513,8 @@ duplicate_boot_notification_request(StationID) ->
     {"a repeated BootNotificationRequest RPCCALL with the same message ID id rejected", fun() ->
         {ok, _} = ocpp_station:connect(StationID, ['2.0.1']),
         ok = ocpp_station:rpc(StationID, default_boot_notification_request(<<"1">>)),
-        ?assertMatch(
-            {error, duplicate_message},
+        ?assertEqual(
+            ok,
             ocpp_station:rpc(StationID, default_boot_notification_request(<<"1">>))
         ),
         %% previous message is processed normally
@@ -1585,7 +1585,7 @@ client_boot_retry(StationID) ->
             ),
             %% Make sure the station is still not provisioned
             ?assertEqual(
-                {error, not_provisioned},
+                ok,
                 ocpp_station:rpc(
                     StationID,
                     ~B<[2,"3","Heartbeat",{}]>
@@ -1736,7 +1736,7 @@ unexpected_callresult(Version, State) ->
                             State =:= connected;
                             State =:= rejected
                         ->
-                            ?assertEqual({error, not_provisioned}, Result);
+                            ?assertEqual(ok, Result);
                         Result when State =:= offline ->
                             ?assertEqual({error, not_connected}, Result);
                         Result when

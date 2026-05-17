@@ -396,7 +396,7 @@ boot_pending_untriggered(Conn, StationID, Version) ->
     ),
     if
         Version =:= '1.6' ->
-            ?assertEqual({error, not_provisioned}, Result),
+            ?assertEqual(ok, Result),
             ?assertError(
                 client_recv_timeout,
                 ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(100) end)
@@ -490,13 +490,7 @@ boot_pending_untriggered_boot_racing(Version, UnsolicitedBootStatus, TriggerStat
                                     ocpp_test_client:make_boot_notification_response(
                                         Version, UnsolicitedBootStatus, []
                                     ),
-                                Expected =
-                                    if
-                                        UnsolicitedBootStatus =:= 'Rejected' ->
-                                            {error, not_provisioned};
-                                        true ->
-                                            ok
-                                    end,
+                                Expected = ok,
                                 PostFun =
                                     fun() ->
                                         if
@@ -506,7 +500,7 @@ boot_pending_untriggered_boot_racing(Version, UnsolicitedBootStatus, TriggerStat
                                                 %% BootNotificationRequest
                                                 %%
                                                 %% this is forbidden by B01.FR.08
-                                                {error, not_provisioned} = ocpp_station:rpc(
+                                                ok = ocpp_station:rpc(
                                                     StationID,
                                                     ocpp_rpc:encode(
                                                         ocpp_rpc:callresult(
@@ -668,7 +662,7 @@ do_rejected_trigger(StationID, ConnHandle, Version, MessageType) ->
     Res = ocpp_test_client:do(ConnHandle, fun() -> ocpp_station:rpc(StationID, TriggeredRPCCall) end),
     case Version of
         '1.6' ->
-            ?assertEqual({error, not_provisioned}, Res);
+            ?assertEqual(ok, Res);
         _ ->
             ?assertEqual(ok, Res),
             Response = ocpp_test_client:do(ConnHandle, fun() -> ocpp_test_client:recv(100) end),
@@ -862,7 +856,7 @@ call_before_boot(Conn, StationID, Version) ->
         RPC = ocpp_rpc:call(Request, ocpp_test_client:message_id()),
         ocpp_station:rpc(StationID, ocpp_rpc:encode(RPC))
     end,
-    ?assertEqual({error, not_provisioned}, ocpp_test_client:do(Conn, F)),
+    ?assertEqual(ok, ocpp_test_client:do(Conn, F)),
     ?assertError(
         client_recv_timeout, ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(50) end)
     ).
@@ -962,7 +956,7 @@ no_call_while_provisioning(Conn, StationID, Version) ->
         ocpp_station:rpc(StationID, ocpp_rpc:encode(RPC))
     end,
     ok = ocpp_test_client:boot_to(Conn, provisioning),
-    ?assertEqual({error, not_provisioned}, ocpp_test_client:do(Conn, F)),
+    ?assertEqual(ok, ocpp_test_client:do(Conn, F)),
     ?assertError(
         client_recv_timeout, ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(50) end)
     ).
