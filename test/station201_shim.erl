@@ -11,6 +11,7 @@
     csms_call_before_boot/2,
     csms_call_after_boot/3,
     csms_call_set_variables/3,
+    csms_call_with_cip/3,
     csms_rpccall_timeout/3,
     csms_reply/3,
     csms_reply_boot_accepted/3,
@@ -50,6 +51,9 @@ csms_call_after_boot(StationID, MessageID, Message) ->
     ocpp_station:call(StationID, MessageID, Message).
 
 csms_call_set_variables(StationID, MessageID, Request) ->
+    ocpp_station:call(StationID, MessageID, Request).
+
+csms_call_with_cip(StationID, MessageID, Request) ->
     ocpp_station:call(StationID, MessageID, Request).
 
 csms_rpccall_timeout(StationID, RPCCall, TimerRef) ->

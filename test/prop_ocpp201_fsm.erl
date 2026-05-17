@@ -240,9 +240,11 @@ timedout_response(#data{csms_timed_out = TimedOut}) ->
 csms_call_pending_command(#data{csms_cip = undefined}) ->
     [];
 csms_call_pending_command(#data{csms_cip = {RPCCall, TimerRef}}) ->
-    %% {history, {call, station201_shim, csms_call_with_cip,
     [
-        %%            [?STATIONID, ocpp_message_gen:request('2.0.1')]}},
+        {history,
+            {call, station201_shim, csms_call_with_cip, [
+                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
+            ]}},
         {history, {call, station201_shim, csms_rpccall_timeout, [?STATIONID, RPCCall, TimerRef]}}
     ].
 
@@ -530,6 +532,14 @@ postcondition(
     {error, {call_pending, PendingID}}
 ) ->
     ocpp_rpc:id(RPCCall) =:= PendingID;
+postcondition(
+    _From,
+    _To,
+    #data{csms_cip = CiP},
+    {call, station201_shim, csms_call_with_cip},
+    {error, {call_pending, ID}}
+) ->
+    ocpp_rpc:id(CiP) =:= ID;
 postcondition(
     _From,
     _To,
