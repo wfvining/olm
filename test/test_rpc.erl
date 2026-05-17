@@ -521,6 +521,7 @@ encode_callresult_test_() ->
             ocpp_rpc:decode('2.0.1', Encoded, [{expected, <<"BootNotification">>}])
         )
     end}.
+
 decode_callresult_unknown_action_test_() ->
     [
         {
@@ -536,3 +537,161 @@ decode_callresult_unknown_action_test_() ->
         }
      || Version <- ['1.6', '2.0.1', '2.1']
     ].
+
+decode_action_mismatch_test_() ->
+    [
+        {
+            "(" ++ atom_to_list(Version) ++
+                ") CALLRESULT decode with mismatched payload returns OccurenceConstraintViolation",
+            ?_test(
+                begin
+                    BootNotificationResponse =
+                        ~'[3,"id",{"status":"Accepted","currentTime":"2030-01-01T00:00:00Z","interval":1}]',
+                    DecodeResult = ocpp_rpc:decode(Version, BootNotificationResponse, [
+                        {expected, ~"ClearCache"}
+                    ]),
+                    ?assertMatch({error, {_, _}}, DecodeResult),
+                    {error, {Kind, Reason}} = DecodeResult,
+                    if
+                        Version == '2.1' ->
+                            ?assertEqual(callresulterror, Kind);
+                        true ->
+                            ?assertEqual(error, Kind)
+                    end,
+                    ?assertEqual(callresulterror, ocpp_rpc:error_type(Reason)),
+                    ?assertEqual(~"id", ocpp_rpc:id(Reason)),
+                    ?assertEqual('OccurenceConstraintViolation', ocpp_rpc:error_code(Reason)),
+                    ?assertEqual(
+                        <<"unallowed properties found in payload">>,
+                        ocpp_rpc:error_description(Reason)
+                    )
+                end
+            )
+        }
+     || Version <- ['1.6', '2.0.1', '2.1']
+    ].
+
+payload_errors_test_() ->
+    ExtraCall = <<
+        "[2,\"id\",\"BootNotification\",{\"reason\":\"PowerUp\","
+        "\"chargingStation\":{\"model\":\"Model\",\"vendorName\":\"Vendor\"},"
+        "\"extraKey\":\"value\"}]"
+    >>,
+    ExtraResult = <<
+        "[3,\"id\",{\"status\":\"Accepted\","
+        "\"currentTime\":\"2025-01-01T00:00:00Z\","
+        "\"interval\":0,\"extraKey\":\"value\"}]"
+    >>,
+    BadValCall = <<
+        "[2,\"id\",\"BootNotification\",{\"reason\":\"InvalidReason\","
+        "\"chargingStation\":{\"model\":\"Model\",\"vendorName\":\"Vendor\"}}]"
+    >>,
+    BadValResult = <<
+        "[3,\"id\",{\"status\":\"InvalidStatus\","
+        "\"currentTime\":\"2025-01-01T00:00:00Z\",\"interval\":0}]"
+    >>,
+    BadTypeCall = <<
+        "[2,\"id\",\"BootNotification\",{\"reason\":\"PowerUp\","
+        "\"chargingStation\":{\"model\":123,\"vendorName\":\"Vendor\"}}]"
+    >>,
+    BadTypeResult = <<
+        "[3,\"id\",{\"status\":\"Accepted\","
+        "\"currentTime\":\"2025-01-01T00:00:00Z\",\"interval\":\"bad\"}]"
+    >>,
+    ViolationSpecs = [
+        {"OccurenceConstraintViolation - extra properties", 'OccurenceConstraintViolation',
+            ~"unallowed properties found in payload", ExtraCall, ExtraResult},
+        {"OccurenceConstraintViolation - missing properties", 'OccurenceConstraintViolation',
+            ~"payload missing required properties", ~'[2,"id","BootNotification",{}]',
+            ~'[3,"id",{}]'},
+        {"PropertyConstraintViolation - bad value", 'PropertyConstraintViolation',
+            ~"invalid value in payload", BadValCall, BadValResult},
+        {"TypeConstraintViolation - bad type", 'TypeConstraintViolation',
+            ~"invalid type in payload", BadTypeCall, BadTypeResult}
+    ],
+    ProtocolPayloads = [
+        {"array", ~"[1,2,3]"},
+        {"integer", ~"1"},
+        {"float", ~"1.5"},
+        {"string", ~'"hello"'},
+        {"boolean", ~"true"},
+        {"null", ~"null"}
+    ],
+    CallResultVersions = ['2.0.1', '2.1'],
+    [
+        [
+            call_violation_test(Desc, Code, Description, Msg)
+         || {Desc, Code, Description, Msg, _} <- ViolationSpecs
+        ],
+        [
+            callresult_violation_test(V, Desc, Code, Description, Msg)
+         || V <- CallResultVersions, {Desc, Code, Description, _, Msg} <- ViolationSpecs
+        ],
+        [
+            call_protocol_error_test(TypeDesc, Payload)
+         || {TypeDesc, Payload} <- ProtocolPayloads
+        ],
+        [
+            callresult_protocol_error_test(V, TypeDesc, Payload)
+         || V <- CallResultVersions, {TypeDesc, Payload} <- ProtocolPayloads
+        ]
+    ].
+
+call_violation_test(Desc, Code, Description, Msg) ->
+    {"(CALL) " ++ Desc, fun() ->
+        {error, {callerror, Error}} = ocpp_rpc:decode('2.0.1', Msg, []),
+        ?assertEqual(Code, ocpp_rpc:error_code(Error)),
+        ?assertEqual(Description, ocpp_rpc:error_description(Error)),
+        ?assertEqual(~"id", ocpp_rpc:id(Error))
+    end}.
+
+callresult_violation_test(Version, Desc, Code, Description, Msg) ->
+    Opts = [{expected, ~"BootNotification"}],
+    {"(CALLRESULT " ++ atom_to_list(Version) ++ ") " ++ Desc, fun() ->
+        {error, {ErrorTag, Error}} =
+            ocpp_rpc:decode(Version, Msg, Opts),
+        case Version of
+            '2.1' -> ?assertEqual(callresulterror, ErrorTag);
+            _ -> ?assertEqual(error, ErrorTag)
+        end,
+        ?assertEqual(callresulterror, ocpp_rpc:error_type(Error)),
+        ?assertEqual(Code, ocpp_rpc:error_code(Error)),
+        ?assertEqual(Description, ocpp_rpc:error_description(Error)),
+        ?assertEqual(~"id", ocpp_rpc:id(Error))
+    end}.
+
+call_protocol_error_test(TypeDesc, Payload) ->
+    Msg = <<"[2,\"id\",\"BootNotification\",", Payload/binary, "]">>,
+    {"(CALL) ProtocolError - payload not a JSON object: " ++ TypeDesc, fun() ->
+        {error, {callerror, Error}} =
+            ocpp_rpc:decode('2.0.1', Msg, []),
+        ?assertEqual('ProtocolError', ocpp_rpc:error_code(Error)),
+        ?assertEqual(
+            ~"Payload is not an object",
+            ocpp_rpc:error_description(Error)
+        ),
+        ?assertEqual(~"id", ocpp_rpc:id(Error))
+    end}.
+
+callresult_protocol_error_test(Version, TypeDesc, Payload) ->
+    Msg = <<"[3,\"id\",", Payload/binary, "]">>,
+    Opts = [{expected, ~"BootNotification"}],
+    {
+        "(CALLRESULT " ++ atom_to_list(Version) ++
+            ") ProtocolError - payload not a JSON object: " ++ TypeDesc,
+        fun() ->
+            {error, {ErrorTag, Error}} =
+                ocpp_rpc:decode(Version, Msg, Opts),
+            case Version of
+                '2.1' -> ?assertEqual(callresulterror, ErrorTag);
+                _ -> ?assertEqual(error, ErrorTag)
+            end,
+            ?assertEqual(callresulterror, ocpp_rpc:error_type(Error)),
+            ?assertEqual('ProtocolError', ocpp_rpc:error_code(Error)),
+            ?assertEqual(
+                ~"Payload is not an object",
+                ocpp_rpc:error_description(Error)
+            ),
+            ?assertEqual(~"id", ocpp_rpc:id(Error))
+        end
+    }.
