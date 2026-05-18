@@ -222,7 +222,13 @@ booting(#data{station_cip = BootCall}) ->
                     {override, #{status => 'Rejected'}}
                 ])
             ]}
-        }
+        },
+        {history,
+            {call, station201_shim, csms_call_before_boot, [
+                ?STATIONID,
+                ocpp_message_gen:request('2.0.1')
+            ]}},
+        {{offline, before_boot}, {call, station201_shim, station_disconnect, [?STATIONID]}}
     ].
 
 pending(Data) ->
@@ -480,6 +486,14 @@ postcondition(
 ) ->
     true;
 postcondition(
+    booting,
+    {offline, before_boot},
+    _Data,
+    {call, station201_shim, station_disconnect, _},
+    ok
+) ->
+    true;
+postcondition(
     _From,
     _To,
     _Data,
@@ -657,6 +671,14 @@ next_state_data(
 next_state_data(
     {connected, SubState},
     {offline, SubState},
+    Data,
+    _Res,
+    {call, station201_shim, station_disconnect, _}
+) ->
+    Data#data{station_cip = undefined, csms_cip = undefined};
+next_state_data(
+    booting,
+    {offline, before_boot},
     Data,
     _Res,
     {call, station201_shim, station_disconnect, _}
