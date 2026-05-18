@@ -1,7 +1,7 @@
 -module(ocpp_rpc).
 
 -export([decode/3, encode/1]).
--export([call/2, callresult/2, callerror/3]).
+-export([call/2, callresult/2, callerror/3, callresulterror/3, send/2]).
 -export([id/1, error_type/1, error_code/1, error_description/1, error_details/1]).
 -export([payload/1, action/1]).
 
@@ -279,7 +279,7 @@ decode_error(_, ID, _, _, Data) ->
 
 error_tag(rpccallerror) ->
     callerror;
-error_tag(rpccallresutlerror) ->
+error_tag(rpccallresulterror) ->
     callresulterror.
 
 decode_request(Type, Version, ID, Action, Payload) when is_binary(Action), is_map(Payload) ->
@@ -392,7 +392,11 @@ encode(#rpccall{id = ID, action = Action, payload = Payload}) ->
 encode(#rpccallresult{id = ID, payload = Payload}) ->
     iolist_to_binary(json:encode([3, ID, Payload], fun encoder/2));
 encode(#rpccallerror{id = ID, code = Code, description = Description, data = Data}) ->
-    iolist_to_binary(json:encode([4, ID, Code, Description, Data])).
+    iolist_to_binary(json:encode([4, ID, Code, Description, Data]));
+encode(#rpccallresulterror{id = ID, code = Code, description = Description, data = Data}) ->
+    iolist_to_binary(json:encode([5, ID, Code, Description, Data]));
+encode(#rpcsend{id = ID, action = Action, payload = Payload}) ->
+    iolist_to_binary(json:encode([6, ID, Action, Payload], fun encoder/2)).
 
 encoder(Term, _Encoder) when is_tuple(Term) ->
     ocpp_message:encode(Term);
@@ -422,6 +426,22 @@ callerror(Code, ID, Options) ->
     Description = proplists:get_value(description, Options, <<"">>),
     Details = proplists:get_value(details, Options, #{}),
     #rpccallerror{code = Code, id = ID, description = Description, data = Details}.
+
+-spec callresulterror(Code :: error_code(), ID :: binary(), Options :: [Option]) ->
+    callresulterror()
+when
+    Option :: {description, binary()} | {details, json:decode_value()}.
+callresulterror(Code, ID, Options) ->
+    Description = proplists:get_value(description, Options, <<"">>),
+    Details = proplists:get_value(details, Options, #{}),
+    #rpccallresulterror{code = Code, id = ID, description = Description, data = Details}.
+
+-doc """
+Construct a SEND RPC message (OCPP 2.1).
+""".
+-spec send(Message :: ocpp_message:message(), ID :: binary()) -> send().
+send(Message, ID) ->
+    #rpcsend{payload = Message, id = ID, action = ocpp_message:action(Message)}.
 
 -spec error_type(callerror() | callresulterror()) -> callerror | callresulterror.
 error_type(#rpccallerror{}) ->
@@ -465,11 +485,13 @@ id(#rpccallerror{id = ID}) ->
 id(#rpccallresulterror{id = ID}) ->
     ID.
 
--spec action(ocpp_rpc:call() | ocpp_rpc:callresult()) -> binary().
+-spec action(ocpp_rpc:call() | ocpp_rpc:callresult() | ocpp_rpc:send()) -> binary().
 action(#rpccall{action = Action}) ->
     Action;
 action(#rpccallresult{payload = Payload}) ->
-    ocpp_message:action(Payload).
+    ocpp_message:action(Payload);
+action(#rpcsend{action = Action}) ->
+    Action.
 
 -spec payload(ocpp_rpc:call() | ocpp_rpc:callresult() | ocpp_rpc:send()) -> ocpp_message:message().
 payload(#rpccall{payload = Payload}) ->

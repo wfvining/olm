@@ -488,39 +488,114 @@ generic_unsupported_message_type_test_() ->
     ].
 
 encode_call_test_() ->
-    {"Calls can be encoded and decoded",
-        %% TODO expand to more message types and versions
-        fun() ->
-            {ok, Msg} = ocpp_message:new(
-                '2.0.1',
-                ~"BootNotificationRequest",
-                #{reason => 'PowerUp', chargingStation => #{model => ~"a", vendorName => ~"b"}}
-            ),
-            Call = ocpp_rpc:call(
-                Msg,
-                <<"id">>
-            ),
+    Versions = ['1.6', '2.0.1', '2.1'],
+    [
+        {"(" ++ atom_to_list(V) ++ ") CALL can be encoded and decoded", fun() ->
+            {ok, Msg} = ocpp_message:new(V, ~"HeartbeatRequest", #{}),
+            Call = ocpp_rpc:call(Msg, <<"id">>),
             Encoded = ocpp_rpc:encode(Call),
-            ?assertEqual({ok, {call, Call}}, ocpp_rpc:decode('2.0.1', Encoded, []))
-        end}.
+            ?assertEqual({ok, {call, Call}}, ocpp_rpc:decode(V, Encoded, []))
+        end}
+     || V <- Versions
+    ].
 
 encode_callresult_test_() ->
-    {"CALLRESULT messages can be encoded and decoded", fun() ->
-        {ok, Msg} = ocpp_message:new(
-            '2.0.1',
-            ~"BootNotificationResponse",
-            #{status => 'Accepted', interval => 0, currentTime => {{2025, 1, 1}, {12, 12, 12}}}
-        ),
-        CallResult = ocpp_rpc:callresult(
-            Msg,
-            <<"id">>
-        ),
-        Encoded = ocpp_rpc:encode(CallResult),
-        ?assertEqual(
-            {ok, {callresult, CallResult}},
-            ocpp_rpc:decode('2.0.1', Encoded, [{expected, <<"BootNotification">>}])
-        )
-    end}.
+    Versions = ['1.6', '2.0.1', '2.1'],
+    [
+        {"(" ++ atom_to_list(V) ++ ") CALLRESULT can be encoded and decoded", fun() ->
+            {ok, Msg} = ocpp_message:new(V, ~"HeartbeatResponse", #{
+                currentTime => {{2025, 1, 1}, {12, 12, 12}}
+            }),
+            CallResult = ocpp_rpc:callresult(Msg, <<"id">>),
+            Encoded = ocpp_rpc:encode(CallResult),
+            ?assertEqual(
+                {ok, {callresult, CallResult}},
+                ocpp_rpc:decode(V, Encoded, [{expected, <<"Heartbeat">>}])
+            )
+        end}
+     || V <- Versions
+    ].
+
+encode_error_messages_test_() ->
+    Versions = ['1.6', '2.0.1', '2.1'],
+    % shared payload for success-path decode
+    CallError = ocpp_rpc:callerror('FormatViolation', ~"id", [
+        {description, ~"error description"}
+    ]),
+    CallResultError = ocpp_rpc:callresulterror('FormatViolation', ~"id", [
+        {description, ~"error description"}
+    ]),
+    EncodedCallError = ocpp_rpc:encode(CallError),
+    EncodedCallResultError = ocpp_rpc:encode(CallResultError),
+    [
+        [
+            {"(" ++ atom_to_list(V) ++ ") CALLERROR can be encoded and decoded", fun() ->
+                {ok, {callerror, Decoded}} = ocpp_rpc:decode(V, EncodedCallError, []),
+                ?assertEqual('FormatViolation', ocpp_rpc:error_code(Decoded)),
+                ?assertEqual(~"id", ocpp_rpc:id(Decoded)),
+                ?assertEqual(~"error description", ocpp_rpc:error_description(Decoded)),
+                ?assertEqual(#{}, ocpp_rpc:error_details(Decoded))
+            end}
+         || V <- Versions
+        ],
+        [
+            {"(2.1) CALLRESULTERROR can be encoded and decoded", fun() ->
+                {ok, {callresulterror, Decoded}} = ocpp_rpc:decode(
+                    '2.1', EncodedCallResultError, []
+                ),
+                ?assertEqual('FormatViolation', ocpp_rpc:error_code(Decoded)),
+                ?assertEqual(~"id", ocpp_rpc:id(Decoded)),
+                ?assertEqual(~"error description", ocpp_rpc:error_description(Decoded)),
+                ?assertEqual(#{}, ocpp_rpc:error_details(Decoded))
+            end}
+        ],
+        [
+            {"(" ++ atom_to_list(V) ++ ") CALLRESULTERROR not supported", fun() ->
+                {error, {callerror, Error}} = ocpp_rpc:decode(V, EncodedCallResultError, []),
+                ?assertEqual('MessageTypeNotSupported', ocpp_rpc:error_code(Error))
+            end}
+         || V <- Versions -- ['2.1']
+        ]
+    ].
+
+encode_send_test_() ->
+    EventData = #{
+        eventId => 0,
+        timestamp => ~"2026-08-06T01:02:03Z",
+        trigger => 'Alerting',
+        actualValue => ~"value",
+        eventNotificationType => 'CustomMonitor',
+        component => #{name => ~"foo"},
+        variable => #{name => ~"bar"}
+    },
+    {ok, NotifyEvent} = ocpp_message:new(
+        '2.1',
+        ~"NotifyEventRequest",
+        #{
+            generatedAt => ~"2026-08-08T00:01:02Z",
+            seqNo => 1,
+            eventData => [EventData]
+        }
+    ),
+    Send = ocpp_rpc:send(NotifyEvent, ~"id"),
+    EncodedSend = ocpp_rpc:encode(Send),
+    [
+        [
+            {"(" ++ atom_to_list(V) ++ ") SEND not supported", fun() ->
+                {error, {callerror, Error}} = ocpp_rpc:decode(V, EncodedSend, []),
+                ?assertEqual('MessageTypeNotSupported', ocpp_rpc:error_code(Error))
+            end}
+         || V <- ['1.6', '2.0.1']
+        ],
+        [
+            {"(2.1) SEND can be encoded and decoded", fun() ->
+                {ok, {send, Decoded}} = ocpp_rpc:decode('2.1', EncodedSend, []),
+                ?assertEqual(~"id", ocpp_rpc:id(Decoded)),
+                ?assertEqual(~"NotifyEvent", ocpp_rpc:action(Decoded)),
+                ?assertEqual(NotifyEvent, ocpp_rpc:payload(Decoded))
+            end}
+        ]
+    ].
 
 decode_callresult_unknown_action_test_() ->
     [
