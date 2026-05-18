@@ -364,20 +364,52 @@ generic_reply(RPCCall) ->
     ocpp_message_gen:message('2.0.1', <<Action/binary, "Response">>).
 
 %% Optional callback, weight modification of transitions
-weight({offline, _}, {connected, _}, _Call) -> 100;
-weight({connected, _}, booting, _) -> 100;
-weight(booting, pending, _) -> 100;
-weight({connected, before_boot}, {connected, before_boot}, {call, station201_shim, station_call_before_boot, _}) -> 10;
-weight({connected, before_boot}, {connected, before_boot}, {call, station201_shim, csms_call_before_boot, _}) -> 10;
-weight({connected, after_boot}, {connected, after_boot}, {call, station201_shim, csms_call_after_boot, _}) -> 15;
-weight({connected, after_boot}, {connected, after_boot}, {call, station201_shim, station_call_security_error, _}) -> 15;
-weight({connected, _}, {connected, _}, {call, station201_shim, connect_already_connected, _}) -> 10;
-weight({connected, _}, {offline, _}, {call, station201_shim, station_disconnect, _}) -> 5;
-weight(booting, idle, _) -> 2;
-weight(booting, {connected, after_boot}, _) -> 20;
-weight(booting, {connected, before_boot}, {call, station201_shim, station_call_before_boot, _}) -> 8;
-weight(pending, pending, {call, station201_shim, station_reply_set_variables_expired, _}) -> 10;
-weight(_FromState, _ToState, _) -> 1.
+weight({offline, _}, {connected, _}, _Call) ->
+    100;
+weight({connected, _}, booting, _) ->
+    100;
+weight(booting, pending, _) ->
+    100;
+weight(
+    {connected, before_boot},
+    {connected, before_boot},
+    {call, station201_shim, station_call_before_boot, _}
+) ->
+    10;
+weight(
+    {connected, before_boot},
+    {connected, before_boot},
+    {call, station201_shim, csms_call_before_boot, _}
+) ->
+    10;
+weight(
+    {connected, after_boot},
+    {connected, after_boot},
+    {call, station201_shim, csms_call_after_boot, _}
+) ->
+    15;
+weight(
+    {connected, after_boot},
+    {connected, after_boot},
+    {call, station201_shim, station_call_security_error, _}
+) ->
+    15;
+weight({connected, _}, {connected, _}, {call, station201_shim, connect_already_connected, _}) ->
+    10;
+weight({connected, _}, {offline, _}, {call, station201_shim, station_disconnect, _}) ->
+    5;
+weight(booting, idle, _) ->
+    2;
+weight(booting, {connected, after_boot}, _) ->
+    20;
+weight(booting, {connected, before_boot}, {call, station201_shim, station_call_before_boot, _}) ->
+    8;
+weight(booting, booting, {call, station201_shim, csms_call_before_boot, _}) ->
+    10;
+weight(pending, pending, {call, station201_shim, station_reply_set_variables_expired, _}) ->
+    10;
+weight(_FromState, _ToState, _) ->
+    1.
 
 precondition(
     _From,
