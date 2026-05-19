@@ -141,7 +141,7 @@ message_id_not_string_test_() ->
                 fun() ->
                     {error, {error, CallError}} =
                         ocpp_rpc:decode('2.0.1', <<"[3,", BadID/binary, ",{}]">>, []),
-                    ?assertEqual(callerror, ocpp_rpc:error_type(CallError)),
+                    ?assertEqual(callresulterror, ocpp_rpc:error_type(CallError)),
                     ?assertEqual('RpcFrameworkError', ocpp_rpc:error_code(CallError)),
                     ?assertEqual(<<"Invalid message ID">>, ocpp_rpc:error_description(CallError)),
                     ?assertEqual(<<"-1">>, ocpp_rpc:id(CallError))
@@ -219,6 +219,8 @@ message_id_too_long_test_() ->
                             {callerror, callerror};
                         MsgType =:= 3, Version =:= '2.1' ->
                             {callresulterror, callresulterror};
+                        MsgType =:= 3 ->
+                            {error, callresulterror};
                         true ->
                             {error, callerror}
                     end,
@@ -295,8 +297,8 @@ callresult_wrong_number_of_fields_test_() ->
         {<<"[3]">>, <<"-1">>}
     ],
     Versions = [
-        {'1.6', error, callerror},
-        {'2.0.1', error, callerror},
+        {'1.6', error, callresulterror},
+        {'2.0.1', error, callresulterror},
         {'2.1', callresulterror, callresulterror}
     ],
     {inparallel, [

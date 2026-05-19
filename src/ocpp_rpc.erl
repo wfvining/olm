@@ -105,7 +105,7 @@ decode(Version, RPCBinary, Options) ->
                         }}};
                 {error, _} ->
                     {error,
-                        {error, #rpccallerror{
+                        {error, #rpccallresulterror{
                             code = 'RpcFrameworkError', description = <<"Invalid message ID">>
                         }}}
             end;
@@ -118,7 +118,7 @@ decode(Version, RPCBinary, Options) ->
         [3 | Rest] ->
             ID = maybe_message_id(Rest),
             {error,
-                {error, #rpccallerror{
+                {error, #rpccallresulterror{
                     code = 'RpcFrameworkError', id = ID, description = <<"Invalid CALLRESULT">>
                 }}};
         [4, ID, ErrorCode, Description, Data] ->
