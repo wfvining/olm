@@ -10,10 +10,12 @@
     station_call_security_error/2,
     station_call_boot/2,
     station_call_heartbeat/2,
-    csms_call_before_boot/2,
+    csms_call/3,
     csms_call_after_boot/3,
-    csms_call_set_variables/3,
+    csms_call_before_boot/2,
     csms_call_with_cip/3,
+    csms_call_get_base_report/3,
+    csms_call_get_report/3,
     csms_call_trigger_message/3,
     csms_rpccall_timeout/3,
     csms_reply/3,
@@ -23,8 +25,7 @@
     station_reply/2,
     station_reply/3,
     station_reply_timedout_call/2,
-    station_reply_timedout_call/3,
-    station_reply_set_variables/3
+    station_reply_timedout_call/3
 ]).
 
 connect_unsupported(StationID, Versions) ->
@@ -59,7 +60,13 @@ csms_call_before_boot(StationID, Message) ->
 csms_call_after_boot(StationID, MessageID, Message) ->
     ocpp_station:call(StationID, MessageID, Message).
 
-csms_call_set_variables(StationID, MessageID, Request) ->
+csms_call(StationID, MessageID, Request) ->
+    ocpp_station:call(StationID, MessageID, Request).
+
+csms_call_get_base_report(StationID, MessageID, Request) ->
+    ocpp_station:call(StationID, MessageID, Request).
+
+csms_call_get_report(StationID, MessageID, Request) ->
     ocpp_station:call(StationID, MessageID, Request).
 
 csms_call_with_cip(StationID, MessageID, Request) ->
@@ -96,10 +103,6 @@ station_reply(StationID, {RPCCall, Payload}) ->
 station_reply(StationID, RPCCall, Payload) ->
     ID = ocpp_rpc:id(RPCCall),
     ocpp_station:rpc(StationID, ocpp_rpc:encode(ocpp_rpc:callresult(Payload, ID))).
-
-station_reply_set_variables(StationID, RPCCall, Payload) ->
-    RPCReply = ocpp_rpc:callresult(Payload, ocpp_rpc:id(RPCCall)),
-    ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCReply)).
 
 messageid() ->
     integer_to_binary(erlang:unique_integer([positive]), 36).

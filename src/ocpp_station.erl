@@ -391,15 +391,40 @@ boot_pending({call, From}, {rpc, Pid, RPCBinary}, State) ->
         {error, {unknown_action, ID}} ->
             logger:info("RPCREPLY to ~p dropped because no CALL is pending", [ID]),
             {keep_state_and_data, [{reply, From, ok}]};
+        {error, {badid, ID}} ->
+            logger:info(
+                "RPCREPLY with ID ~p dropped because CALL ~p is pending",
+                [ID, pending_call_id(State)]
+            ),
+            {keep_state_and_data, [{reply, From, ok}]};
         {error, not_connected} ->
             logger:warning(
                 "got RPC from process that is not connected to station ~p~nRPC: ~s",
                 [State#state.stationid, RPCBinary]
             ),
             {keep_state_and_data, [{reply, From, {error, not_connected}}]};
-        Reason ->
-            %% TODO construct an appropriate error message and return it to the connection process
-            error({shit, RPCBinary, Reason})
+        {ok, {callerror, _}} ->
+            %% TODO handle callerror response - log, clear pending call (if ID matches),
+            %%      eventually need a handler mechanism to report this to the CSMS
+            %%      implementation.
+            {keep_state_and_data, [{reply, From, ok}]};
+        {ok, {callresulterror, _}} ->
+            %% TODO handle callresult error - log & drop - may need handler eventually
+            {keep_state_and_data, [{reply, From, ok}]};
+        {ok, {send, _}} ->
+            %% TODO handle send - should be an error in this state (SecurityError?)
+            {keep_state_and_data, [{reply, From, ok}]};
+        {error, {callerror, _}} ->
+            %% TODO this comes from decoding an invalid request - drop, log, & reply
+            {keep_state_and_data, [{reply, From, ok}]};
+        {error, {callresulterror, _}} ->
+            %% TODO this comes from decoding an invalid response - log, send error
+            %%      reply, clear call in progress
+            {keep_state_and_data, [{reply, From, ok}]};
+        {error, {error, _}} ->
+            %% TODO a decoding error occurred that does not map to a sendable error -
+            %%      message log the error & drop the message
+            {keep_state_and_data, [{reply, From, ok}]}
     end;
 boot_pending({call, From}, {send, {call, MessageID, Message}}, State) ->
     %% TODO prevent illegal messages from being sent.
@@ -457,6 +482,11 @@ accepted({call, From}, {rpc, Pid, RPCBinary}, State) ->
             handle_call(Send, From, State);
         {error, {unknown_action, ID}} ->
             logger:info("CALLRESULT for unknown action ~p dropped", [ID]),
+            {keep_state_and_data, [{reply, From, ok}]};
+        {error, {badid, ID}} ->
+            logger:info("CALLRESULT for ~p dropped because ~p is pending", [
+                ID, pending_call_id(State)
+            ]),
             {keep_state_and_data, [{reply, From, ok}]};
         {error, {callerror, _}} ->
             {keep_state_and_data, [{reply, From, ok}]};
@@ -583,12 +613,17 @@ decode_rpc(RPCBinary, Pid, #state{connection = {Version, Pid, _}} = State) ->
         case State#state.pending_call of
             undefined ->
                 [];
-            {_MessageID, Action, _, _} ->
-                [{expected, Action}]
+            {MessageID, Action, _, _} ->
+                [{expected, Action}, {id, MessageID}]
         end,
     ocpp_rpc:decode(Version, RPCBinary, Opts);
 decode_rpc(RPCBinary, Pid, _) ->
     {error, not_connected}.
+
+pending_call_id(#state{pending_call = {MessageID, _, _, _}}) ->
+    MessageID;
+pending_call_id(_) ->
+    undefined.
 
 handle_callresult(RPC, From, #state{pending_call = undefined}) ->
     logger:info(

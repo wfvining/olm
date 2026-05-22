@@ -233,104 +233,15 @@ booting(#data{station_cip = BootCall}) ->
 
 pending(Data) ->
     %% received a BootNotificationResponse with status=Pending
-    %, use_case_B06(), use_case_B07(), use_case_B08()]).
     lists:flatten([
-        %% functional_block_b_security_error(),
-        use_case_B05(Data),
+        functional_block_b_security_error(),
+        config_commands(Data),
+        report_commands(Data),
         csms_call_pending_command(Data),
         timedout_response(Data)
     ]).
 
-timedout_response(#data{csms_timed_out = []}) ->
-    [];
-timedout_response(#data{csms_timed_out = TimedOut}) ->
-    [
-        {history,
-            {call, station201_shim, station_reply_timedout_call, [
-                ?STATIONID,
-                oneof([
-                    {Call, generic_reply(Call)}
-                 || Call <- TimedOut
-                ])
-            ]}}
-    ].
-
-csms_call_pending_command(#data{csms_cip = undefined}) ->
-    [];
-csms_call_pending_command(#data{csms_cip = {RPCCall, TimerRef}}) ->
-    [
-        {history,
-            {call, station201_shim, csms_call_with_cip, [
-                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
-            ]}},
-        {history, {call, station201_shim, csms_rpccall_timeout, [?STATIONID, RPCCall, TimerRef]}}
-    ].
-
-use_case_B05(Data) ->
-    %% SetVariables
-    [
-        {history,
-            {call, station201_shim, csms_call_set_variables, [
-                ?STATIONID, messageid(), ocpp_message_gen:message('2.0.1', ~"SetVariablesRequest")
-            ]}}
-        | use_case_B05_responses(Data)
-    ].
-
-use_case_B05_responses(#data{csms_cip = undefined}) ->
-    [];
-use_case_B05_responses(#data{csms_cip = {RPCCall, _}}) ->
-    case ocpp_rpc:action(RPCCall) of
-        ~"SetVariables" ->
-            [
-                {history,
-                    {call, station201_shim, station_reply_set_variables, [
-                        ?STATIONID,
-                        RPCCall,
-                        set_variables_response_payload(RPCCall)
-                    ]}}
-            ];
-        _ ->
-            []
-    end.
-
-set_variables_response_payload(Call) ->
-    Message = ocpp_rpc:payload(Call),
-    VarData = ocpp_message:get('setVariableData', Message),
-    ocpp_message_gen:message(
-        '2.0.1',
-        ~"SetVariablesResponse",
-        [
-            {override, #{
-                setVariableResult => [
-                    maps:with([component, variable, attributeType], Var)
-                 || Var <- VarData
-                ]
-            }}
-        ]
-    ).
-
-%% This defines a command to test B01.FR.10, B02.FR.05, B03.FR.08
-functional_block_b_security_error() ->
-    {history,
-        {call, station201_shim, station_call_security_error, [
-            ?STATIONID,
-            ?LET(
-                Payload,
-                ?SUCHTHAT(
-                    Message,
-                    ocpp_message_gen:request('2.0.1'),
-                    ocpp_message:action(Message) =/= ~"BootNotification"
-                ),
-                ocpp_rpc:call(Payload, messageid())
-            )
-        ]}}.
-
-todo(What) ->
-    io:format("WARNING - TODO (~s)\n", [What]),
-    todo.
-
 idle(_Data) ->
-    %% Station has booted and is ready for normal operation
     [
         {
             {idle, cip},
@@ -406,8 +317,6 @@ weight(booting, {connected, before_boot}, {call, station201_shim, station_call_b
     8;
 weight(booting, booting, {call, station201_shim, csms_call_before_boot, _}) ->
     10;
-weight(pending, pending, {call, station201_shim, station_reply_set_variables_expired, _}) ->
-    10;
 weight(_FromState, _ToState, _) ->
     1.
 
@@ -429,22 +338,26 @@ precondition(From, _To, _Data, {call, station201_shim, station_call_security_err
 ->
     false;
 precondition(
-    {connected, SubState}, _To, _Data, {call, station201_shim, csms_call_set_variables, _}
+    {connected, SubState}, _To, _Data, {call, station201_shim, csms_call, _}
 ) when
     SubState =/= accepted
 ->
     false;
-precondition({offline, _}, _To, _Data, {call, station201_shim, csms_call_set_variables, _}) ->
+precondition({offline, _}, _To, _Data, {call, station201_shim, csms_call, _}) ->
     false;
-precondition(booting, _To, _Data, {call, station201_shim, csms_call_set_variables, _}) ->
+precondition(booting, _To, _Data, {call, station201_shim, csms_call, _}) ->
     false;
 precondition(
-    _From, _To, #data{csms_cip = CiP}, {call, station201_shim, csms_call_set_variables, _}
+    _From, _To, #data{csms_cip = CiP}, {call, station201_shim, csms_call, _}
 ) when CiP =/= undefined ->
     false;
 precondition(
-    _From, _To, #data{csms_cip = undefined}, {call, station201_shim, station_reply_set_variables, _}
-) ->
+    _From, _To, #data{csms_cip = CiP}, {call, station201_shim, csms_call_get_base_report, _}
+) when CiP =/= undefined ->
+    false;
+precondition(
+    _From, _To, #data{csms_cip = CiP}, {call, station201_shim, csms_call_get_report, _}
+) when CiP =/= undefined ->
     false;
 precondition(
     _From, _To, #data{csms_cip = undefined}, {call, station201_shim, Command, _}
@@ -452,6 +365,8 @@ precondition(
     Command =:= csms_rpccall_timeout;
     Command =:= csms_call_with_cip
 ->
+    false;
+precondition(_From, _To, #data{csms_cip = undefined}, {call, station201_shim, station_reply, _}) ->
     false;
 precondition(_From, _To, #data{}, {call, _Mod, _Fun, _Args}) ->
     true.
@@ -591,7 +506,7 @@ postcondition(
     _From,
     _To,
     _Data,
-    {call, station201_shim, csms_call_set_variables, [_, MessageID, _]},
+    {call, station201_shim, csms_call, [_, MessageID, _]},
     ok
 ) ->
     assert_station_received_call(MessageID);
@@ -599,11 +514,35 @@ postcondition(
     _From,
     _To,
     _Data,
-    {call, station201_shim, station_reply_set_variables, _},
+    {call, station201_shim, csms_call_get_base_report, [_, MessageID, _]},
+    ok
+) ->
+    assert_station_received_call(MessageID);
+postcondition(
+    _From,
+    _To,
+    _Data,
+    {call, station201_shim, csms_call_get_report, [_, MessageID, _]},
+    ok
+) ->
+    assert_station_received_call(MessageID);
+postcondition(
+    _From,
+    _To,
+    _Data,
+    {call, station201_shim, station_reply, _},
     ok
 ) ->
     true;
 postcondition(_From, _To, _Data, {call, station201_shim, station_reply_timedout_call, _}, ok) ->
+    true;
+postcondition(
+    _From,
+    _To,
+    _Data,
+    {call, station201_shim, station_reply_timedout_call, _},
+    ok
+) ->
     true;
 postcondition(
     _From,
@@ -678,8 +617,32 @@ next_state_data(
     _To,
     Data,
     _Res,
-    {call, station201_shim, csms_call_set_variables, [_, MessageID, Request]}
+    {call, station201_shim, csms_call, [_, MessageID, Request]}
 ) ->
+    Ref = update_timeout_mock(MessageID),
+    Data#data{csms_cip = {ocpp_rpc:call(Request, MessageID), Ref}};
+next_state_data(
+    _From,
+    _To,
+    Data,
+    _Res,
+    {call, station201_shim, csms_call_get_base_report, [_, MessageID, Request]}
+) ->
+    %% TODO once NotifyReportRequest handling is implemented, this
+    %% transition will need to handle the follow-on NotifyReport flow
+    %% from the station.
+    Ref = update_timeout_mock(MessageID),
+    Data#data{csms_cip = {ocpp_rpc:call(Request, MessageID), Ref}};
+next_state_data(
+    _From,
+    _To,
+    Data,
+    _Res,
+    {call, station201_shim, csms_call_get_report, [_, MessageID, Request]}
+) ->
+    %% TODO once NotifyReportRequest handling is implemented, this
+    %% transition will need to handle the follow-on NotifyReport flow
+    %% from the station.
     Ref = update_timeout_mock(MessageID),
     Data#data{csms_cip = {ocpp_rpc:call(Request, MessageID), Ref}};
 next_state_data(
@@ -690,16 +653,8 @@ next_state_data(
     {call, station201_shim, csms_rpccall_timeout, [_, RPCCall, _]}
 ) ->
     Data#data{csms_cip = undefined, csms_timed_out = [RPCCall | Data#data.csms_timed_out]};
-next_state_data(_From, _To, Data, _Res, {call, station201_shim, station_reply_set_variables, _}) ->
+next_state_data(_From, _To, Data, _Res, {call, station201_shim, station_reply, [_, _, _]}) ->
     Data#data{csms_cip = undefined};
-next_state_data(
-    _From,
-    _To,
-    Data,
-    _Res,
-    {call, station201_shim, station_reply_set_variables_expired, [_, RPCCall, _]}
-) ->
-    Data#data{csms_timed_out = lists:delete(RPCCall, Data#data.csms_timed_out)};
 next_state_data(
     {connected, SubState},
     {offline, SubState},
@@ -719,6 +674,159 @@ next_state_data(
 next_state_data(_From, _To, Data, _Res, {call, _Mod, _Fun, _Args}) ->
     NewData = Data,
     NewData.
+
+%% Command generation helper functinos
+timedout_response(#data{csms_timed_out = []}) ->
+    [];
+timedout_response(#data{csms_timed_out = TimedOut}) ->
+    [
+        {history,
+            {call, station201_shim, station_reply_timedout_call, [
+                ?STATIONID,
+                oneof([
+                    {Call, generic_reply(Call)}
+                 || Call <- TimedOut
+                ])
+            ]}}
+    ].
+
+csms_call_pending_command(#data{csms_cip = undefined}) ->
+    [];
+csms_call_pending_command(#data{csms_cip = {RPCCall, TimerRef}}) ->
+    [
+        {history,
+            {call, station201_shim, csms_call_with_cip, [
+                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
+            ]}},
+        {history, {call, station201_shim, csms_rpccall_timeout, [?STATIONID, RPCCall, TimerRef]}}
+    ].
+
+%% This defines a command to test B01.FR.10, B02.FR.05, B03.FR.08
+functional_block_b_security_error() ->
+    {history,
+        {call, station201_shim, station_call_security_error, [
+            ?STATIONID,
+            ?LET(
+                Payload,
+                ?SUCHTHAT(
+                    Message,
+                    ocpp_message_gen:request('2.0.1'),
+                    ocpp_message:action(Message) =/= ~"BootNotification"
+                ),
+                ocpp_rpc:call(Payload, messageid())
+            )
+        ]}}.
+
+matching_response_payload(RPCCall) ->
+    Action = ocpp_rpc:action(RPCCall),
+    matching_response_payload(RPCCall, Action).
+
+%% Construct a response payload that matches the variable data in the request.
+matching_response_payload(RPCCall, ~"SetVariables") ->
+    Message = ocpp_rpc:payload(RPCCall),
+    VarData = ocpp_message:get('setVariableData', Message),
+    ocpp_message_gen:message('2.0.1', ~"SetVariablesResponse", [
+        {override, #{
+            setVariableResult => [
+                maps:with([component, variable, attributeType], V)
+             || V <- VarData
+            ]
+        }}
+    ]);
+matching_response_payload(RPCCall, ~"GetVariables") ->
+    Message = ocpp_rpc:payload(RPCCall),
+    VarData = ocpp_message:get('getVariableData', Message),
+    ocpp_message_gen:message('2.0.1', ~"GetVariablesResponse", [
+        {override, #{
+            getVariableResult => [
+                maps:with([component, variable, attributeType], V)
+             || V <- VarData
+            ]
+        }}
+    ]);
+matching_response_payload(_RPCCall, ~"GetBaseReport") ->
+    ocpp_message_gen:message('2.0.1', ~"GetBaseReportResponse", [
+        %% {override, #{status => 'Rejected'}}
+    ]);
+matching_response_payload(_RPCCall, ~"GetReport") ->
+    ocpp_message_gen:message('2.0.1', ~"GetReportResponse", [
+        %% {override, #{status => 'Rejected'}}
+    ]);
+matching_response_payload(_RPCCall, ~"TriggerMessage") ->
+    ocpp_message_gen:message('2.0.1', ~"TriggerMessageResponse", [
+        %% {override, #{status => 'Rejected'}}
+    ]);
+matching_response_payload(_RPCCall, Action) ->
+    ocpp_message_gen:message('2.0.1', <<Action/binary, "Response">>).
+
+%% CSMS-initiated commands (B05 SetVariables, B06 GetVariables, TriggerMessage).
+%% Uses oneof to let proper pick which message type to send, avoiding a
+%% duplicate {Mod, Fun, Arity} transition error from proper_fsm.
+config_commands(#data{csms_cip = undefined} = Data) ->
+    csms_config_call() ++ config_responses(Data);
+config_commands(Data) ->
+    config_responses(Data).
+
+csms_config_call() ->
+    Request = oneof([
+        ocpp_message_gen:message('2.0.1', ~"SetVariablesRequest"),
+        ocpp_message_gen:message('2.0.1', ~"GetVariablesRequest")
+    ]),
+    [
+        {history, {call, station201_shim, csms_call, [?STATIONID, messageid(), Request]}}
+    ].
+
+config_responses(#data{csms_cip = {RPCCall, _}}) ->
+    case ocpp_rpc:action(RPCCall) of
+        Action when
+            Action =:= ~"SetVariables";
+            Action =:= ~"GetVariables";
+            Action =:= ~"TriggerMessage"
+        ->
+            [
+                {history,
+                    {call, station201_shim, station_reply, [
+                        ?STATIONID, RPCCall, matching_response_payload(RPCCall)
+                    ]}}
+            ];
+        _ ->
+            []
+    end;
+config_responses(_) ->
+    [].
+
+%% CSMS-initiated report commands (B07 GetBaseReport, B08 GetReport).
+%% Response includes report_responses, gated on csms_cip in model data.
+report_commands(Data) ->
+    [
+        {history,
+            {call, station201_shim, csms_call_get_base_report, [
+                ?STATIONID,
+                messageid(),
+                ocpp_message_gen:message('2.0.1', ~"GetBaseReportRequest")
+            ]}},
+        {history,
+            {call, station201_shim, csms_call_get_report, [
+                ?STATIONID,
+                messageid(),
+                ocpp_message_gen:message('2.0.1', ~"GetReportRequest")
+            ]}}
+    ] ++ report_responses(Data).
+
+report_responses(#data{csms_cip = {RPCCall, _}}) ->
+    case ocpp_rpc:action(RPCCall) of
+        Action when Action =:= ~"GetBaseReport"; Action =:= ~"GetReport" ->
+            Payload = matching_response_payload(RPCCall),
+            [{history, {call, station201_shim, station_reply, [?STATIONID, RPCCall, Payload]}}];
+        _ ->
+            []
+    end;
+report_responses(_) ->
+    [].
+
+todo(What) ->
+    io:format("WARNING - TODO (~s)\n", [What]),
+    todo.
 
 %% Helper to generate unique message IDs
 update_timeout_mock(MessageID) ->
