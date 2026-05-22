@@ -772,3 +772,19 @@ callresult_protocol_error_test(Version, TypeDesc, Payload) ->
             ?assertEqual(~"id", ocpp_rpc:id(Error))
         end
     }.
+
+callresult_id_mismatch_test_() ->
+    Versions = ['1.6', '2.0.1', '2.1'],
+    ExpectedID = ~"expected",
+    [
+        {
+            "(" ++ atom_to_list(Version) ++
+                ") "
+                "decode fails when ID des not match expected ID",
+            ?_assertEqual(
+                {error, {badid, ~"bad"}},
+                ocpp_rpc:decode(Version, ~'[3,"bad",{}]', [{id, ExpectedID}])
+            )
+        }
+     || Version <- Versions
+    ].

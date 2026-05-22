@@ -60,19 +60,25 @@ no appropriate error response `{error, {error, Reason}}` is returned.
 This indicates that the message should be dropped while providing
 information, in the form of a `t:callerror()` or a
 `t:callresulterror()` about why the decoding failed.
+
+If the option `{id, ID}` is present, decoding will return `{error,
+{badid, DecodedID}}` if the message ID in `RPCBinary` is not equal to
+`ID` and the message is a properly formatted CALLRESULT.
 """.
--spec decode(ocpp:version(), binary(), [{expected, binary()}]) ->
+-spec decode(ocpp:version(), binary(), [{expected, binary()} | {id, binary()}]) ->
     {ok, {call, call()}}
     | {ok, {callresult, callresult()}}
     | {ok, {callresulterror, callresulterror()}}
     | {ok, {callerror, callerror()}}
     | {ok, {send, send()}}
     | {error, {unknown_action, binary()}}
+    | {error, {badid, binary()}}
     | {error, {callresulterror, callresulterror()}}
     | {error, {callerror, callerror()}}
     | {error, {error, callerror() | callresulterror()}}.
 decode(Version, RPCBinary, Options) ->
     ExpectedAction = proplists:get_value(expected, Options),
+    ExpectedID = proplists:get_value(id, Options),
     try json:decode(RPCBinary) of
         [2, ID, Action, Payload] ->
             case validate_message_id(ID) of
@@ -92,12 +98,17 @@ decode(Version, RPCBinary, Options) ->
                 }}};
         [3, ID, Payload] ->
             case validate_message_id(ID) of
-                {ok, ID} when ExpectedAction =/= undefined ->
+                {ok, ID} when
+                    ExpectedAction =/= undefined, ID =:= ExpectedID;
+                    ExpectedAction =/= undefined, ExpectedID =:= undefined
+                ->
                     decode_result(
                         Version, ID, Payload, ExpectedAction
                     );
-                {ok, ID} ->
+                {ok, ID} when ID =:= ExpectedID; ExpectedID =:= undefined ->
                     {error, {unknown_action, ID}};
+                {ok, ID} ->
+                    {error, {badid, ID}};
                 {error, _} when Version =:= '2.1' ->
                     {error,
                         {callresulterror, #rpccallresulterror{
