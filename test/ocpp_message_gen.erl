@@ -29,14 +29,10 @@ pdu(Version, MessageType, Options) ->
     Schema = load_schema(Version, MessageType),
     ?LET(
         Obj,
-        gen_cmap(Schema),
-        ?LET(
-            M,
-            apply_custom(Obj, proplists:get_value(override, Options, #{})),
-            remove_properties(
-                proplists:get_value(without, Options, []),
-                M
-            )
+        gen_cmap(Schema, Options),
+        maps:without(
+            proplists:get_value(without, Options, []),
+            Obj
         )
     ).
 
@@ -73,35 +69,6 @@ remove_properties([], M) ->
     M;
 remove_properties([Prop | Rest], M) ->
     remove_properties(Rest, maps:remove(Prop, M)).
-
-apply_custom(Obj, CustomGens) ->
-    ?LET(
-        Overrides,
-        gen_custom(CustomGens),
-        maps:merge_with(fun maybe_merge/3, Obj, Overrides)
-    ).
-
-maybe_merge(_, M1, M2) when is_map(M1), is_map(M2) -> maps:merge_with(fun maybe_merge/3, M1, M2);
-maybe_merge(_, A1, M2) when is_list(A1), is_map(M2) ->
-    %% apply single override to all elements
-    [maps:merge_with(fun maybe_merge/3, X, M2) || X <- A1];
-maybe_merge(_, A1, A2) when is_list(A1), is_list(A2), length(A1) =< length(A2) ->
-    %% apply per-element overrides, extending the
-    %% original array if there are more elements in
-    %% the override array
-    [maybe_merge(nil, X1, X2) || {X1, X2} <- lists:zip(A1, A2)] ++ lists:nthtail(length(A1), A2);
-maybe_merge(_, A1, A2) when is_list(A1), is_list(A2) ->
-    %% if the per-element list is shorter than the original then it supersedes it entirely
-    A2;
-maybe_merge(_, _, V) ->
-    V.
-
-gen_custom(M) when is_map(M) ->
-    ?LET(Xs, [{K, gen_custom(V)} || K := V <- M], maps:from_list(Xs));
-gen_custom(Xs) when is_list(Xs) ->
-    [gen_custom(X) || X <- Xs];
-gen_custom(G) ->
-    G.
 
 load_schema(Version, SchemaName) ->
     try
@@ -143,82 +110,101 @@ merge_overrides(_Name, _, V) ->
 subset(List) ->
     ?LET(P, float(0.0, 1.0), [Gen || Gen <- List, rand:uniform() =< P]).
 
-gen_cmap(Spec) ->
-    gen_cmap({object, Spec}, maps:get(defs, Spec, #{})).
+gen_cmap(Spec, Options) ->
+    Overrides = proplists:get_value(override, Options, undefined),
+    gen_cmap({object, Spec}, Overrides, maps:get(defs, Spec, #{})).
 
-gen_cmap({object, #{properties := Properties} = Constraints}, Defs) ->
+gen_cmap({object, #{properties := Properties} = Constraints}, undefined, Defs) ->
     RequiredProperties = maps:get(required, Constraints, []),
     OptionalProperties = maps:keys(Properties) -- RequiredProperties,
     ?LET(
         {Required, Optional},
         {
-            [{P, gen_cmap(maps:get(P, Properties), Defs)} || P <- RequiredProperties],
-            ?SIZED(
-                S,
-                ?SHRINK(
-                    frequency([
-                        {1,
-                            subset([
-                                {P, resize(S div 10, gen_cmap(maps:get(P, Properties), Defs))}
-                             || P <- OptionalProperties
-                            ])},
-                        {99,
-                            subset([
-                                {P, resize(S div 10, gen_cmap(maps:get(P, Properties), Defs))}
-                             || P <- OptionalProperties, P =/= 'customData'
-                            ])}
-                    ]),
-                    [
-                        subset([
-                            {P, resize(S div 100, gen_cmap(maps:get(P, Properties), Defs))}
-                         || P <- OptionalProperties, P =/= 'customData'
-                        ]),
-                        []
-                    ]
-                )
-            )
+            [{P, gen_cmap(maps:get(P, Properties), undefined, Defs)} || P <- RequiredProperties],
+            optional_properties(maps:with(OptionalProperties, Properties), Defs)
         },
         maps:from_list(Required ++ Optional)
     );
-gen_cmap({array, #{items := ISpec} = Constraints}, Defs) ->
+gen_cmap({object, #{properties := Properties} = Constraints}, Overrides, Defs) when
+    is_map(Overrides)
+->
+    Overridden = maps:keys(Overrides),
+    RequiredProperties = lists:uniq(maps:get(required, Constraints, []) ++ Overridden),
+    OptionalProperties = maps:keys(Properties) -- RequiredProperties,
+    ?LET(
+        {Required, Optional},
+        {
+            [
+                {P, gen_cmap(maps:get(P, Properties), maps:get(P, Overrides, undefined), Defs)}
+             || P <- RequiredProperties
+            ],
+            optional_properties(maps:with(OptionalProperties, Properties), Defs)
+        },
+        maps:from_list(Required ++ Optional)
+    );
+gen_cmap({array, #{items := ISpec} = Constraints}, undefined, Defs) ->
     ?LET(
         Len,
         ?SIZED(
-            S,
+            Size,
             resize(
-                S div 8,
+                Size div 1000,
                 integer(
                     maps:get(min_items, Constraints, 0),
                     maps:get(max_items, Constraints, inf)
                 )
             )
         ),
-        vector(Len, gen_cmap(ISpec, Defs))
+        vector(Len, gen_cmap(ISpec, undefined, Defs))
     );
-gen_cmap({integer, Constraints}, _) ->
+gen_cmap({array, #{items := ISpec}}, Overrides, Defs) when is_list(Overrides) ->
+    [gen_cmap(ISpec, Override, Defs) || Override <- Overrides];
+gen_cmap({integer, Constraints}, undefined, _) ->
     Lims = to_integer_limits(Constraints),
     integer(maps:get(min, Lims, inf), maps:get(max, Lims, inf));
-gen_cmap({float, Constraints}, _) ->
+gen_cmap({float, Constraints}, undefined, _) ->
     Lims = to_float_limits(Constraints),
     float(maps:get(min, Lims, inf), maps:get(max, Lims, inf));
-gen_cmap({number, Constraints}, Defs) ->
+gen_cmap({number, Constraints}, undefined, Defs) ->
     oneof([
-        gen_cmap({integer, to_integer_limits(Constraints)}, Defs),
-        gen_cmap({float, to_float_limits(Constraints)}, Defs)
+        gen_cmap({integer, to_integer_limits(Constraints)}, undefined, Defs),
+        gen_cmap({float, to_float_limits(Constraints)}, undefined, Defs)
     ]);
-gen_cmap({string, Constraints}, _) ->
+gen_cmap({string, Constraints}, undefined, _) ->
     utf8(maps:get(max_length, Constraints, inf));
-gen_cmap({enum, Choices}, _) ->
+gen_cmap({enum, Choices}, undefined, _) ->
     oneof(Choices);
-gen_cmap(any, _) ->
+gen_cmap(any, undefined, _) ->
     %% just make sure this is encodable as a JSON term
     ?LET(M, list({atom(), oneof([utf8(), atom(), number(), boolean()])}), maps:from_list(M));
-gen_cmap(boolean, _) ->
+gen_cmap(boolean, undefined, _) ->
     boolean();
-gen_cmap(datetime, _) ->
+gen_cmap(datetime, undefined, _) ->
     prop_datetime:datetime();
-gen_cmap({ref, Name}, Defs) ->
-    gen_cmap(maps:get(Name, Defs), Defs).
+gen_cmap({ref, Name}, Overrides, Defs) ->
+    gen_cmap(maps:get(Name, Defs), Overrides, Defs);
+gen_cmap(_, Override, _) when Override =/= undefined ->
+    %% catch-all clause handles proper generators being assigned as an
+    %% override as well as overrides for primitive values.
+    Override.
+
+optional_properties(Opts, Defs) ->
+    ?SHRINK(
+        frequency(
+            [
+                {1, subset([{P, gen_cmap(Spec, undefined, Defs)} || P := Spec <- Opts])},
+                {10,
+                    subset([
+                        {P, gen_cmap(Spec, undefined, Defs)}
+                     || P := Spec <- Opts,
+                        P =/= 'customData'
+                    ])}
+            ]
+        ),
+        [
+            []
+        ]
+    ).
 
 to_integer_limits(Constraints) ->
     maps:map(
