@@ -196,17 +196,9 @@ connected(
                     {next_state, provisioning, State#state{rpc_call = RPCCall}, [
                         {reply, From, ok}
                     ]};
-                MessageType when not State#state.has_booted ->
+                MessageType ->
                     logger:warning(
-                        "~p got unexpected ~p message before provisioning (MessageID = ~p)",
-                        [State#state.stationid, MessageType, ocpp_rpc:id(RPCCall)]
-                    ),
-                    {keep_state_and_data, [
-                        {reply, From, ok}
-                    ]};
-                MessageType when State#state.has_booted ->
-                    logger:warning(
-                        "~p got unexpected ~p message before acceptance (MessageID = ~p)",
+                        "~p got unexpected ~p message before station accepted (MessageID = ~p)",
                         [State#state.stationid, MessageType, ocpp_rpc:id(RPCCall)]
                     ),
                     rpcsend(
@@ -236,6 +228,8 @@ connected(
             ),
             {keep_state_and_data, [{reply, From, ok}]}
     end;
+connected({call, From}, {send, _}, #state{pending_call = {ID, _, _, _}}) ->
+    {keep_state_and_data, [{reply, From, {error, {call_pending, ID}}}]};
 connected({call, From}, {send, _}, _) ->
     {keep_state_and_data, [{reply, From, {error, not_provisioned}}]};
 connected({call, From}, {disconnect, Pid}, #state{connection = {_, Pid, Ref}} = State) ->
@@ -280,8 +274,19 @@ provisioning({call, From}, {rpc, Pid, RPCBinary}, State = #state{rpc_call = Pend
                     ]};
                 MessageType ->
                     logger:warning(
-                        "~p got unexpected ~p message before provisioning (MessageID = ~p)",
+                        "~p got unexpected ~p message before station accepted (MessageID = ~p)",
                         [State#state.stationid, MessageType, ocpp_rpc:id(RPCCall)]
+                    ),
+                    rpcsend(
+                        State#state.connection,
+                        ocpp_rpc:callerror(
+                            'SecurityError',
+                            ocpp_rpc:id(RPCCall),
+                            [
+                                {description, ~"Unexpected CALL before station was Accepted"},
+                                {details, #{~"action" => ocpp_message:action(Payload)}}
+                            ]
+                        )
                     ),
                     {keep_state_and_data, [{reply, From, ok}]}
             end;
@@ -312,7 +317,9 @@ provisioning({call, From}, {rpc, Pid, RPCBinary}, State = #state{rpc_call = Pend
             ),
             {keep_state_and_data, [{reply, From, ok}]}
     end;
-provisioning({call, From}, {send, {call, _, _}}, State) ->
+provisioning({call, From}, {send, {call, _, _}}, #state{pending_call = {ID, _, _, _}}) ->
+    {keep_state_and_data, [{reply, From, {error, {call_pending, ID}}}]};
+provisioning({call, From}, {send, {call, _, _}}, _State) ->
     {keep_state_and_data, [{reply, From, {error, not_provisioned}}]};
 provisioning(
     {call, From}, {send, {callresult, MessageID, Message}}, #state{rpc_call = PendingCall} = State
@@ -353,6 +360,13 @@ provisioning(
     end;
 provisioning({call, From}, {connect, _, _}, _) ->
     {keep_state_and_data, [{reply, From, {error, already_connected}}]};
+provisioning(
+    info,
+    {timeout, Ref, {rpccall, MessageID}},
+    #state{pending_call = {MessageID, _, _, Ref}} = State
+) ->
+    logger:info("RPCCALL to station timed out (MessageID = ~p)", [MessageID]),
+    {keep_state, State#state{pending_call = undefined}};
 provisioning(info, {timeout, _, {rpccall, _}}, _State) ->
     keep_state_and_data;
 provisioning(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
@@ -453,12 +467,24 @@ boot_pending(
             {keep_state_and_data, [{reply, From, {error, {call_not_pending, MessageID}}}]}
     end;
 boot_pending(
-    info, {timeout, TRef, {rpccall, _}}, #state{pending_call = {_, _, _, TRef}} = State
+    info,
+    {timeout, TRef, {rpccall, MessageID}},
+    #state{pending_call = {MessageID, _, _, TRef}} = State
 ) ->
-    {keep_state, State#state{pending_call = undefined}}.
+    logger:info("RPCCALL to station timed out (MessageID = ~p)", [MessageID]),
+    {keep_state, State#state{pending_call = undefined}};
+boot_pending(info, {timeout, _, {rpccall, _}}, _State) ->
+    keep_state_and_data.
 
+accepted(
+    info,
+    {timeout, Ref, {rpccall, MessageID}},
+    #state{pending_call = {MessageID, _, _, Ref}} = State
+) ->
+    logger:info("RPCCALL to station timed out (MessageID = ~p)", [MessageID]),
+    {keep_state, State#state{pending_call = undefined}};
 accepted(info, {timeout, _, {rpccall, _}}, _State) ->
-    {keep_state_and_data};
+    keep_state_and_data;
 accepted(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("Connection process ~p down~n~p", [Pid, Reason]),
     {next_state, offline, State#state{connection = undefined, rpc_call = undefined}};
@@ -513,8 +539,23 @@ accepted(
             {keep_state_and_data, [
                 {reply, From, {error, message_dropped}}
             ]}
+    end;
+accepted({call, From}, {send, {call, MessageID, Message}}, State) ->
+    RPC = ocpp_rpc:call(Message, MessageID),
+    case do_rpc_call(RPC, State) of
+        {ok, {Reply, NewState}} ->
+            {keep_state, NewState, [{reply, From, Reply}]};
+        {error, Reason} ->
+            {keep_state, State, [{reply, From, Reason}]}
     end.
 
+offline(
+    info,
+    {timeout, TRef, {rpccall, MessageID}},
+    #state{pending_call = {MessageID, _, _, TRef}} = State
+) ->
+    logger:info("RPCCALL to station timed out (MessageID = ~p)", [MessageID]),
+    {keep_state, State#state{pending_call = undefined}};
 offline(info, {timeout, _, {rpccall, _}}, _State) ->
     keep_state_and_data;
 offline({call, From}, {rpc, Pid, RPCBinary}, State) ->
@@ -563,6 +604,13 @@ reconnecting({call, From}, {rpc, Pid, RPCBinary}, State) ->
     end;
 reconnecting({call, From}, {connect, _Pid, _Versions}, _State) ->
     {keep_state_and_data, [{reply, From, {error, already_connected}}]};
+reconnecting(
+    info,
+    {timeout, TRef, {rpccall, MessageID}},
+    #state{pending_call = {MessageID, _, _, TRef}} = State
+) ->
+    logger:info("RPCCALL to station timed out (MessageID = ~p)", [MessageID]),
+    {keep_state, State#state{pending_call = undefined}};
 reconnecting(info, {timeout, _, {rpccall, _}}, _State) ->
     keep_state_and_data;
 reconnecting(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->

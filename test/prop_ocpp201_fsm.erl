@@ -12,8 +12,8 @@
     next_state_data/5
 ]).
 -export([
-    offline/2,
-    connected/2,
+    offline/1,
+    connected/1,
     booting/1,
     pending/1,
     idle/1,
@@ -94,229 +94,182 @@ shuffle(Xs) ->
     [X || {X, _} <- lists:keysort(2, [{X, rand:uniform()} || X <- Xs])].
 
 %% Initial state for the state machine
-initial_state() -> {offline, before_boot}.
+initial_state() -> offline.
+
 %% Initial model data at the start. Should be deterministic.
 initial_state_data() ->
     #data{}.
 
-offline(Booted, _Data) ->
-    [
-        {history,
-            {call, station201_shim, connect_unsupported, [?STATIONID, list(oneof(['1.6', '2.1']))]}},
-        {
-            {connected, Booted},
-            {call, station201_shim, connect_supported, [
-                ?STATIONID,
-                ?LET(Vsns, list(oneof(['1.6', '2.1', '2.0.1'])), shuffle(['2.0.1' | Vsns]))
-            ]}
-        }
-        %% TODO attempt to call ocpp_station:rpc/2 in this state
-        %%      attempt to call ocpp_station:reply/3
-        %%      attempt to call ocpp_station:disconnect/1
-        %%      attempt to call ocpp_station:call/3
-        %%      attempt to call ocpp_station:disconnect/1
-    ].
+offline(Data) ->
+    general_commands(Data) ++
+        [
+            {history,
+                {call, station201_shim, connect_unsupported, [
+                    ?STATIONID, list(oneof(['1.6', '2.1']))
+                ]}},
+            {
+                connected,
+                {call, station201_shim, connect_supported, [
+                    ?STATIONID,
+                    ?LET(Vsns, list(oneof(['1.6', '2.1', '2.0.1'])), shuffle(['2.0.1' | Vsns]))
+                ]}
+            }
+            %% TODO attempt to call ocpp_station:rpc/2 in this state
+            %%      attempt to call ocpp_station:reply/3
+            %%      attempt to call ocpp_station:disconnect/1
+            %%      attempt to call ocpp_station:call/3
+            %%      attempt to call ocpp_station:disconnect/1
+        ].
 
-connected(before_boot, _Data) ->
-    [
-        {booting,
-            {call, station201_shim, station_call_boot, [
-                ?STATIONID,
-                ?LET(
-                    {MessageID, Payload},
-                    {
-                        messageid(),
-                        ocpp_message_gen:message('2.0.1', ~"BootNotificationRequest")
-                    },
-                    ocpp_rpc:call(Payload, MessageID)
-                )
-            ]}},
-        {history,
-            {call, station201_shim, station_call_before_boot, [
-                ?STATIONID,
-                ?SUCHTHAT(
-                    Message,
-                    ocpp_message_gen:request('2.0.1'),
-                    ocpp_message:action(Message) =/= ~"BootNotification"
-                )
-            ]}},
-        {history,
-            {call, station201_shim, csms_call_before_boot, [
-                ?STATIONID,
-                ocpp_message_gen:request('2.0.1')
-            ]}},
-        {history,
-            {call, station201_shim, connect_already_connected, [
-                ?STATIONID,
-                ?LET(Vsns, list(oneof(['1.6', '2.1', '2.0.1'])), shuffle(['2.0.1' | Vsns]))
-            ]}},
-        {{offline, before_boot}, {call, station201_shim, station_disconnect, [?STATIONID]}}
-    ];
-connected(accepted, _Data) ->
-    %% booted and accepted
-    [{history, {call, ?MODULE, todo, ["allow heartbeat and other messages, allow boot, etc..."]}}];
-connected(after_boot, _Data) ->
-    %% booted but not accepted
-    [
-        functional_block_b_security_error(),
-        {history,
-            {call, station201_shim, csms_call_after_boot, [
-                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
-            ]}},
-        {history,
-            {call, station201_shim, connect_already_connected, [
-                ?STATIONID,
-                ?LET(Vsns, list(oneof(['1.6', '2.1', '2.0.1'])), shuffle(['2.0.1' | Vsns]))
-            ]}},
-        {{offline, after_boot}, {call, station201_shim, station_disconnect, [?STATIONID]}},
-        {booting,
-            {call, station201_shim, station_call_boot, [
-                ?STATIONID,
-                ?LET(
-                    {BootRequest, MessageID},
-                    {ocpp_message_gen:message('2.0.1', ~"BootNotificationRequest"), messageid()},
-                    ocpp_rpc:call(BootRequest, MessageID)
-                )
-            ]}}
-    ].
+connected(Data) ->
+    general_commands(Data) ++
+        [
+            {booting,
+                {call, station201_shim, station_call_boot, [
+                    ?STATIONID,
+                    ?LET(
+                        {MessageID, Payload},
+                        {
+                            messageid(),
+                            ocpp_message_gen:message('2.0.1', ~"BootNotificationRequest")
+                        },
+                        ocpp_rpc:call(Payload, MessageID)
+                    )
+                ]}},
+            station_call_security_error([~"BootNotification"]),
+            {history,
+                {call, station201_shim, connect_already_connected, [
+                    ?STATIONID,
+                    ?LET(Vsns, list(oneof(['1.6', '2.1', '2.0.1'])), shuffle(['2.0.1' | Vsns]))
+                ]}},
+            {offline, {call, station201_shim, station_disconnect, [?STATIONID]}}
+        ].
 
-booting(#data{station_cip = BootCall}) ->
-    [
-        {idle,
-            {call, station201_shim, csms_reply_boot_accepted, [
-                ?STATIONID,
-                BootCall,
-                ocpp_message_gen:message(
-                    '2.0.1',
-                    ~"BootNotificationResponse",
-                    [{override, #{status => 'Accepted'}}]
-                )
-            ]}},
-        {
-            {connected, before_boot},
-            {call, station201_shim, station_call_before_boot, [
-                ?STATIONID,
-                ?SUCHTHAT(
-                    Message,
-                    ocpp_message_gen:request('2.0.1'),
-                    ocpp_message:action(Message) =/= ~"BootNotification"
-                )
-            ]}
-        },
-        {pending,
-            {call, station201_shim, csms_reply_boot_pending, [
-                ?STATIONID,
-                BootCall,
-                ocpp_message_gen:message(
-                    '2.0.1',
-                    ~"BootNotificationResponse",
-                    [{override, #{status => 'Pending'}}]
-                )
-            ]}},
-        {
-            {connected, after_boot},
-            {call, station201_shim, csms_reply_boot_rejected, [
-                ?STATIONID,
-                BootCall,
-                ocpp_message_gen:message('2.0.1', ~"BootNotificationResponse", [
-                    {override, #{status => 'Rejected'}}
-                ])
-            ]}
-        },
-        {history,
-            {call, station201_shim, csms_call_before_boot, [
-                ?STATIONID,
-                ocpp_message_gen:request('2.0.1')
-            ]}},
-        {{offline, before_boot}, {call, station201_shim, station_disconnect, [?STATIONID]}}
-    ].
+reconnected(Data) ->
+    %% booted and accepted, reconnected after going offline without rebooting
+    general_commands(Data) ++
+        [
+            {history,
+                {call, ?MODULE, todo, ["allow heartbeat and other messages, allow boot, etc..."]}}
+        ].
+
+booting(#data{station_cip = BootCall} = Data) ->
+    general_commands(Data) ++
+        [
+            station_call_security_error([~"BootNotification"]),
+            {idle,
+                {call, station201_shim, csms_reply_boot_accepted, [
+                    ?STATIONID,
+                    BootCall,
+                    ocpp_message_gen:message(
+                        '2.0.1',
+                        ~"BootNotificationResponse",
+                        [{override, #{status => 'Accepted'}}]
+                    )
+                ]}},
+            {pending,
+                {call, station201_shim, csms_reply_boot_pending, [
+                    ?STATIONID,
+                    BootCall,
+                    ocpp_message_gen:message(
+                        '2.0.1',
+                        ~"BootNotificationResponse",
+                        [{override, #{status => 'Pending'}}]
+                    )
+                ]}},
+            {
+                connected,
+                {call, station201_shim, csms_reply_boot_rejected, [
+                    ?STATIONID,
+                    BootCall,
+                    ocpp_message_gen:message('2.0.1', ~"BootNotificationResponse", [
+                        {override, #{status => 'Rejected'}}
+                    ])
+                ]}
+            },
+            {offline, {call, station201_shim, station_disconnect, [?STATIONID]}}
+            %% TODO allow a subsequent BootNotification here to model the station timing out an retrying.
+        ].
 
 pending(Data) ->
     %% received a BootNotificationResponse with status=Pending
-    lists:flatten([
-        functional_block_b_security_error(),
-        config_commands(Data),
-        report_commands(Data),
-        csms_call_pending_command(Data),
-        timedout_response(Data)
-    ]).
+    general_commands(Data) ++
+        lists:flatten([
+            station_call_security_error([~"BootNotification"]),
+            config_commands(Data),
+            report_commands(Data),
+            timedout_response(Data),
+            {booting,
+                {call, station201_shim, station_call_boot, [
+                    ?STATIONID,
+                    ?LET(
+                        {MessageID, Payload},
+                        {
+                            messageid(),
+                            ocpp_message_gen:message('2.0.1', ~"BootNotificationRequest")
+                        },
+                        ocpp_rpc:call(Payload, MessageID)
+                    )
+                ]}}
+        ]).
 
-idle(_Data) ->
-    [
-        {
-            {idle, cip},
-            {call, station201_shim, station_call_heartbeat, [
-                ?STATIONID,
-                ?LET(
-                    MessageID,
-                    messageid(),
-                    begin
-                        {ok, Message} = ocpp_message:new('2.0.1', ~"HeartbeatRequest", #{}),
-                        ocpp_rpc:call(Message, MessageID)
-                    end
-                )
-            ]}
-        }
-    ].
+idle(Data) ->
+    general_commands(Data) ++
+        [
+            {
+                {idle, cip},
+                {call, station201_shim, station_call_heartbeat, [
+                    ?STATIONID,
+                    ?LET(
+                        MessageID,
+                        messageid(),
+                        begin
+                            {ok, Message} = ocpp_message:new('2.0.1', ~"HeartbeatRequest", #{}),
+                            ocpp_rpc:call(Message, MessageID)
+                        end
+                    )
+                ]}
+            }
+        ].
 
-idle(cip, #data{station_cip = PendingCall}) ->
+idle(cip, #data{station_cip = PendingCall} = Data) ->
     MessageID = ocpp_rpc:id(PendingCall),
-    [
-        {idle,
-            {call, station201_shim, csms_reply, [
-                ?STATIONID,
-                MessageID,
-                generic_reply(PendingCall)
-            ]}}
-    ].
-
-generic_reply(RPCCall) ->
-    Action = ocpp_message:action(ocpp_rpc:payload(RPCCall)),
-    ocpp_message_gen:message('2.0.1', <<Action/binary, "Response">>).
+    general_commands(Data) ++
+        [
+            %% TODO station times out and sends another message
+            {idle,
+                {call, station201_shim, csms_reply, [
+                    ?STATIONID,
+                    MessageID,
+                    matching_response_payload(PendingCall)
+                ]}}
+        ].
 
 %% Optional callback, weight modification of transitions
-weight({offline, _}, {connected, _}, _Call) ->
-    100;
-weight({connected, _}, booting, _) ->
-    100;
+weight(offline, connected, _Call) ->
+    20;
+weight(connected, booting, _) ->
+    20;
 weight(booting, pending, _) ->
-    100;
+    20;
+weight(booting, idle, _) ->
+    2;
 weight(
-    {connected, before_boot},
-    {connected, before_boot},
-    {call, station201_shim, station_call_before_boot, _}
-) ->
-    10;
-weight(
-    {connected, before_boot},
-    {connected, before_boot},
-    {call, station201_shim, csms_call_before_boot, _}
-) ->
-    10;
-weight(
-    {connected, after_boot},
-    {connected, after_boot},
-    {call, station201_shim, csms_call_after_boot, _}
-) ->
-    15;
-weight(
-    {connected, after_boot},
-    {connected, after_boot},
+    connected,
+    connected,
     {call, station201_shim, station_call_security_error, _}
 ) ->
     15;
-weight({connected, _}, {connected, _}, {call, station201_shim, connect_already_connected, _}) ->
-    10;
-weight({connected, _}, {offline, _}, {call, station201_shim, station_disconnect, _}) ->
+weight(connected, connected, {call, station201_shim, connect_already_connected, _}) ->
     5;
-weight(booting, idle, _) ->
+weight(connected, offline, {call, station201_shim, station_disconnect, _}) ->
+    5;
+weight(pending, pending, _) ->
+    %% 3x more likely to stay in the pending state...
     2;
-weight(booting, {connected, after_boot}, _) ->
-    20;
-weight(booting, {connected, before_boot}, {call, station201_shim, station_call_before_boot, _}) ->
-    8;
-weight(booting, booting, {call, station201_shim, csms_call_before_boot, _}) ->
-    10;
+weight(pending, _, _) ->
+    %% ... than to leave the pending state
+    1;
 weight(_FromState, _ToState, _) ->
     1.
 
@@ -327,30 +280,17 @@ precondition(
     {call, station201_shim, station_reply_timedout_call, _}
 ) when length(TimedOut) =:= 0 ->
     false;
-precondition(
-    {connected, SubState}, _To, _Data, {call, station201_shim, station_call_security_error, _}
-) when
-    SubState =:= before_boot; SubState =:= accepted
-->
-    false;
-precondition(From, _To, _Data, {call, station201_shim, station_call_security_error, _}) when
-    From =/= pending, From =/= {connected, after_boot}
-->
-    false;
-precondition(
-    {connected, SubState}, _To, _Data, {call, station201_shim, csms_call, _}
-) when
-    SubState =/= accepted
-->
-    false;
-precondition({offline, _}, _To, _Data, {call, station201_shim, csms_call, _}) ->
-    false;
-precondition(booting, _To, _Data, {call, station201_shim, csms_call, _}) ->
-    false;
+%% TODO the following two clauses should be change to true and a test should be added that
+%%      in this state a csms_call should fail with an error like {error, not_prvosioned}
 precondition(
     _From, _To, #data{csms_cip = CiP}, {call, station201_shim, csms_call, _}
 ) when CiP =/= undefined ->
     false;
+precondition(
+    pending, _, #data{csms_cip = CiP}, {call, station201_shim, csms_call, [_, _, Message]}
+) ->
+    AllowedActions = [~"GetVariables", ~"SetVariables", ~"GetReport", ~"GetBaseReport"],
+    CiP =/= undefined andalso not lists:member(ocpp_message:action(Message), AllowedActions);
 precondition(
     _From, _To, #data{csms_cip = CiP}, {call, station201_shim, csms_call_get_base_report, _}
 ) when CiP =/= undefined ->
@@ -366,6 +306,11 @@ precondition(
     Command =:= csms_call_with_cip
 ->
     false;
+precondition(From, _To, _Data, {call, station201_shim, station_reply, _}) when
+    From =:= connected;
+    From =:= booting
+->
+    false;
 precondition(_From, _To, #data{csms_cip = undefined}, {call, station201_shim, station_reply, _}) ->
     false;
 precondition(_From, _To, #data{}, {call, _Mod, _Fun, _Args}) ->
@@ -375,23 +320,23 @@ precondition(_From, _To, #data{}, {call, _Mod, _Fun, _Args}) ->
 %% `{call, Mod, Fun, Args}', determine if the result `Res' (coming
 %% from the actual system) makes sense.
 postcondition(
-    {offline, _},
-    {offline, _},
+    offline,
+    offline,
     _Data,
     {call, station201_shim, connect_unsupported, _},
     {error, not_supported}
 ) ->
     true;
 postcondition(
-    {offline, _},
-    {connected, _},
+    offline,
+    connected,
     _Data,
     {call, station201_shim, connect_supported, _},
     {ok, '2.0.1'}
 ) ->
     true;
 postcondition(
-    {connected, _},
+    _From,
     booting,
     _Data,
     {call, station201_shim, station_call_boot, _},
@@ -399,34 +344,37 @@ postcondition(
 ) ->
     true;
 postcondition(
-    _From,
-    {connected, before_boot},
-    _Data,
-    {call, station201_shim, station_call_before_boot, _},
-    ok
-) ->
-    refute_rpcsend();
-postcondition(
     From,
     From,
-    _Data,
-    {call, station201_shim, csms_call_before_boot, _},
+    #data{csms_cip = undefined},
+    {call, station201_shim, csms_call, _},
     {error, not_provisioned}
 ) when
-    From =:= {connected, before_boot}; From =:= booting
+    From =:= connected; From =:= booting
 ->
     refute_rpcsend();
 postcondition(
-    {connected, _},
-    {connected, _},
+    From,
+    From,
+    #data{csms_cip = {RPCCall, _}},
+    {call, station201_shim, csms_call, _},
+    {error, {call_pending, CallID}}
+) when
+    From =:= connected; From =:= booting
+->
+    CallID =:= ocpp_rpc:id(RPCCall) andalso
+        refute_rpcsend();
+postcondition(
+    connected,
+    connected,
     _Data,
     {call, station201_shim, connect_already_connected, _},
     {error, already_connected}
 ) ->
     true;
 postcondition(
-    {connected, SubState},
-    {offline, SubState},
+    connected,
+    offline,
     _Data,
     {call, station201_shim, station_disconnect, _},
     ok
@@ -434,7 +382,7 @@ postcondition(
     true;
 postcondition(
     booting,
-    {offline, before_boot},
+    offline,
     _Data,
     {call, station201_shim, station_disconnect, _},
     ok
@@ -447,15 +395,7 @@ postcondition(
     {call, station201_shim, station_call_security_error, [_, RPCCall]},
     ok
 ) ->
-    assert_station_received_callerror(RPCCall);
-postcondition(
-    {connected, after_boot},
-    {connected, after_boot},
-    _Data,
-    {call, station201_shim, csms_call_after_boot, _},
-    {error, not_provisioned}
-) ->
-    refute_rpcsend();
+    assert_station_received_callerror(RPCCall, 'SecurityError');
 postcondition(
     booting,
     idle,
@@ -480,7 +420,7 @@ postcondition(
     assert_station_received_valid_reply(RPCCall);
 postcondition(
     booting,
-    {connected, after_boot},
+    connected,
     _Data,
     {call, station201_shim, csms_reply_boot_rejected, [_, RPCCall, _]},
     ok
@@ -502,6 +442,32 @@ postcondition(
     ok
 ) ->
     assert_station_received_valid_reply(RPCCall);
+postcondition(offline, _, _, {call, station201_shim, csms_call, _}, {error, not_connected}) ->
+    refute_rpcsend();
+postcondition(
+    From,
+    _,
+    #data{csms_cip = undefined},
+    {call, station201_shim, csms_call, _},
+    {error, not_provisioned}
+) when
+    From =:= connected;
+    From =:= booting;
+    From =:= pending
+->
+    refute_rpcsend();
+postcondition(
+    From,
+    _,
+    #data{csms_cip = {RPCCall, _}},
+    {call, station201_shim, csms_call, _},
+    {error, {call_pending, ID}}
+) when
+    From =:= connected;
+    From =:= booting;
+    From =:= pending
+->
+    ocpp_rpc:id(RPCCall) =:= ID andalso refute_rpcsend();
 postcondition(
     _From,
     _To,
@@ -530,19 +496,15 @@ postcondition(
     _From,
     _To,
     _Data,
-    {call, station201_shim, station_reply, _},
+    {call, station201_shim, StationReplyFun, _},
     ok
-) ->
+) when
+    StationReplyFun =:= station_reply;
+    StationReplyFun =:= station_reply_report_accepted;
+    StationReplyFun =:= station_reply_report_not_accepted
+->
     true;
 postcondition(_From, _To, _Data, {call, station201_shim, station_reply_timedout_call, _}, ok) ->
-    true;
-postcondition(
-    _From,
-    _To,
-    _Data,
-    {call, station201_shim, station_reply_timedout_call, _},
-    ok
-) ->
     true;
 postcondition(
     _From,
@@ -552,14 +514,6 @@ postcondition(
     {error, {call_pending, PendingID}}
 ) ->
     ocpp_rpc:id(RPCCall) =:= PendingID;
-postcondition(
-    _From,
-    _To,
-    #data{csms_cip = CiP},
-    {call, station201_shim, csms_call_with_cip},
-    {error, {call_pending, ID}}
-) ->
-    ocpp_rpc:id(CiP) =:= ID;
 postcondition(
     _From,
     _To,
@@ -595,17 +549,9 @@ next_state_data(
 ) ->
     Data#data{station_cip = RPCCall};
 next_state_data(
-    {connected, _}, booting, Data, _Res, {call, station201_shim, station_call_boot, [_, RPCCall]}
+    _, booting, Data, _Res, {call, station201_shim, station_call_boot, [_, RPCCall]}
 ) ->
     Data#data{station_cip = RPCCall};
-next_state_data(
-    booting,
-    {connected, before_boot},
-    Data,
-    _Res,
-    {call, station201_shim, station_call_before_boot, _}
-) ->
-    Data#data{station_cip = undefined};
 next_state_data(booting, _, Data, _Res, {call, station201_shim, BootCommand, _}) when
     BootCommand =:= csms_reply_boot_accepted;
     BootCommand =:= csms_reply_boot_pending;
@@ -653,19 +599,24 @@ next_state_data(
     {call, station201_shim, csms_rpccall_timeout, [_, RPCCall, _]}
 ) ->
     Data#data{csms_cip = undefined, csms_timed_out = [RPCCall | Data#data.csms_timed_out]};
-next_state_data(_From, _To, Data, _Res, {call, station201_shim, station_reply, [_, _, _]}) ->
+next_state_data(_From, _To, Data, _Res, {call, station201_shim, StationReplyFun, [_, _, _]}) when
+    StationReplyFun =:= station_reply;
+    StationReplyFun =:= station_reply_report_accepted;
+    StationReplyFun =:= station_reply_report_not_accepted
+->
     Data#data{csms_cip = undefined};
 next_state_data(
-    {connected, SubState},
-    {offline, SubState},
+    connected,
+    offline,
     Data,
     _Res,
     {call, station201_shim, station_disconnect, _}
 ) ->
+    %% TODO Should csms_cip be cleared here? (and below?) what about pending->offline?
     Data#data{station_cip = undefined, csms_cip = undefined};
 next_state_data(
     booting,
-    {offline, before_boot},
+    offline,
     Data,
     _Res,
     {call, station201_shim, station_disconnect, _}
@@ -684,7 +635,7 @@ timedout_response(#data{csms_timed_out = TimedOut}) ->
             {call, station201_shim, station_reply_timedout_call, [
                 ?STATIONID,
                 oneof([
-                    {Call, generic_reply(Call)}
+                    {Call, matching_response_payload(Call)}
                  || Call <- TimedOut
                 ])
             ]}}
@@ -702,7 +653,7 @@ csms_call_pending_command(#data{csms_cip = {RPCCall, TimerRef}}) ->
     ].
 
 %% This defines a command to test B01.FR.10, B02.FR.05, B03.FR.08
-functional_block_b_security_error() ->
+station_call_security_error(AllowedActions) ->
     {history,
         {call, station201_shim, station_call_security_error, [
             ?STATIONID,
@@ -711,7 +662,9 @@ functional_block_b_security_error() ->
                 ?SUCHTHAT(
                     Message,
                     ocpp_message_gen:request('2.0.1'),
-                    ocpp_message:action(Message) =/= ~"BootNotification"
+                    lists:all(
+                        fun(Action) -> ocpp_message:action(Message) =/= Action end, AllowedActions
+                    )
                 ),
                 ocpp_rpc:call(Payload, messageid())
             )
@@ -762,10 +715,10 @@ matching_response_payload(_RPCCall, Action) ->
 %% CSMS-initiated commands (B05 SetVariables, B06 GetVariables, TriggerMessage).
 %% Uses oneof to let proper pick which message type to send, avoiding a
 %% duplicate {Mod, Fun, Arity} transition error from proper_fsm.
-config_commands(#data{csms_cip = undefined} = Data) ->
-    csms_config_call() ++ config_responses(Data);
-config_commands(Data) ->
-    config_responses(Data).
+config_commands(#data{csms_cip = undefined}) ->
+    csms_config_call();
+config_commands(_) ->
+    [].
 
 csms_config_call() ->
     Request = oneof([
@@ -775,25 +728,6 @@ csms_config_call() ->
     [
         {history, {call, station201_shim, csms_call, [?STATIONID, messageid(), Request]}}
     ].
-
-config_responses(#data{csms_cip = {RPCCall, _}}) ->
-    case ocpp_rpc:action(RPCCall) of
-        Action when
-            Action =:= ~"SetVariables";
-            Action =:= ~"GetVariables";
-            Action =:= ~"TriggerMessage"
-        ->
-            [
-                {history,
-                    {call, station201_shim, station_reply, [
-                        ?STATIONID, RPCCall, matching_response_payload(RPCCall)
-                    ]}}
-            ];
-        _ ->
-            []
-    end;
-config_responses(_) ->
-    [].
 
 %% CSMS-initiated report commands (B07 GetBaseReport, B08 GetReport).
 %% Response includes report_responses, gated on csms_cip in model data.
@@ -816,13 +750,46 @@ report_commands(Data) ->
 report_responses(#data{csms_cip = {RPCCall, _}}) ->
     case ocpp_rpc:action(RPCCall) of
         Action when Action =:= ~"GetBaseReport"; Action =:= ~"GetReport" ->
-            Payload = matching_response_payload(RPCCall),
-            [{history, {call, station201_shim, station_reply, [?STATIONID, RPCCall, Payload]}}];
+            AcceptedPayload =
+                ocpp_message_gen:message(
+                    '2.0.1',
+                    <<Action/binary, "Response">>,
+                    [{override, #{status => 'Accepted'}}]
+                ),
+            NotAcceptedPayload =
+                ocpp_message_gen:message(
+                    '2.0.1',
+                    <<Action/binary, "Response">>,
+                    [{override, #{status => oneof(['Rejected', 'NotSupported', 'EmptyResultSet'])}}]
+                ),
+            [
+                {history,
+                    {call, station201_shim, station_reply_report_accepted, [
+                        ?STATIONID, RPCCall, AcceptedPayload
+                    ]}},
+                {history,
+                    {call, station201_shim, station_reply_report_not_accepted, [
+                        ?STATIONID, RPCCall, NotAcceptedPayload
+                    ]}}
+            ];
         _ ->
             []
     end;
 report_responses(_) ->
     [].
+
+station_generic_reply(#data{csms_cip = undefined}) ->
+    [];
+station_generic_reply(#data{csms_cip = {RPCCall, _}}) ->
+    [
+        {history,
+            {call, station201_shim, station_reply, [
+                ?STATIONID, RPCCall, matching_response_payload(RPCCall)
+            ]}}
+    ].
+
+general_commands(Data) ->
+    csms_call_pending_command(Data) ++ station_generic_reply(Data).
 
 todo(What) ->
     io:format("WARNING - TODO (~s)\n", [What]),
@@ -855,13 +822,13 @@ assert_station_received_valid_reply(RPCCall, ValidationFun) ->
         false
     end.
 
-assert_station_received_callerror(RPCCall) ->
+assert_station_received_callerror(RPCCall, ErrorCode) ->
     receive
         {ocpp, {rpcsend, ReplyBin}} ->
             Action = ocpp_message:action(ocpp_rpc:payload(RPCCall)),
             case ocpp_rpc:decode('2.0.1', ReplyBin, [{expected, Action}]) of
                 {ok, {callerror, Error}} ->
-                    ocpp_rpc:error_code(Error) =:= 'SecurityError' andalso
+                    ocpp_rpc:error_code(Error) =:= ErrorCode andalso
                         ocpp_rpc:id(Error) =:= ocpp_rpc:id(RPCCall);
                 _ ->
                     false

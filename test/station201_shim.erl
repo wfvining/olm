@@ -11,8 +11,6 @@
     station_call_boot/2,
     station_call_heartbeat/2,
     csms_call/3,
-    csms_call_after_boot/3,
-    csms_call_before_boot/2,
     csms_call_with_cip/3,
     csms_call_get_base_report/3,
     csms_call_get_report/3,
@@ -24,6 +22,8 @@
     csms_reply_boot_rejected/3,
     station_reply/2,
     station_reply/3,
+    station_reply_report_accepted/3,
+    station_reply_report_not_accepted/3,
     station_reply_timedout_call/2,
     station_reply_timedout_call/3
 ]).
@@ -53,12 +53,6 @@ station_call_boot(StationID, RPCCall) ->
 
 station_call_heartbeat(StationID, RPCCall) ->
     ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
-
-csms_call_before_boot(StationID, Message) ->
-    ocpp_station:call(StationID, messageid(), Message).
-
-csms_call_after_boot(StationID, MessageID, Message) ->
-    ocpp_station:call(StationID, MessageID, Message).
 
 csms_call(StationID, MessageID, Request) ->
     ocpp_station:call(StationID, MessageID, Request).
@@ -95,6 +89,12 @@ station_reply_timedout_call(StationID, {RPCCall, Payload}) ->
     station_reply_timedout_call(StationID, RPCCall, Payload).
 
 station_reply_timedout_call(StationID, RPCCall, Payload) ->
+    station_reply(StationID, RPCCall, Payload).
+
+station_reply_report_accepted(StationID, RPCCall, Payload) ->
+    station_reply(StationID, RPCCall, Payload).
+
+station_reply_report_not_accepted(StationID, RPCCall, Payload) ->
     station_reply(StationID, RPCCall, Payload).
 
 station_reply(StationID, {RPCCall, Payload}) ->

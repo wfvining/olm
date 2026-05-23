@@ -494,11 +494,22 @@ provision_station_client_test_() ->
                 [
                     ?_stationTest(
                         "message other than a BootNotificationRequest rejected before provisioning",
-                        ocpp_station:rpc(
-                            ?testStationID,
-                            ~B<[2,"0","Authorize",{"idToken":{"idToken":"","type":"NoAuthorization"}}]>
-                        ),
-                        ok
+                        begin
+                            ocpp_station:rpc(
+                                ?testStationID,
+                                ~B<[2,"0","Authorize",{"idToken":{"idToken":"","type":"NoAuthorization"}}]>
+                            ),
+                            ocpp_client_recv(1000)
+                        end,
+                        RPCResult,
+                        begin
+                            DecodedRPC = ocpp_rpc:decode('2.0.1', RPCResult, [
+                                {expected, ~"Authorize"}
+                            ]),
+                            ?assertMatch({ok, {callerror, _}}, DecodedRPC),
+                            {ok, {callerror, CallError}} = DecodedRPC,
+                            ?assertEqual('SecurityError', ocpp_rpc:error_code(CallError))
+                        end
                     ),
                     ?_stationTest(
                         "start provisioning by sending a BootNotificationRequest",
@@ -514,22 +525,27 @@ provision_station_client_test_() ->
                     ),
                     ?_stationTest(
                         "additional messages before BootNotificationResponse are rejected",
-                        ocpp_station:rpc(
-                            ?testStationID,
-                            <<
-                                ~S<[2,"2","TransactionEvent",>,
-                                ~S<{"eventType":"Started","timestamp":"2025-01-01T00:00:00Z",>,
-                                ~S<"triggerReason":"Authorized","seqNo":1,"offline":true,>,
-                                ~S<"transactionInfo":{"transactionId":"test"}}]>
-                            >>
-                        ),
-                        %% B01.FR.10 states that a security error should
-                        %% be sent when "the charging station has
-                        %% received a BootNotificaionRequest in which the
-                        %% status is not Accepted." That seems to imply
-                        %% disallowed messages prior to sending a
-                        %% BootNotificationResponse should simply be dropped.
-                        ok
+                        begin
+                            ocpp_station:rpc(
+                                ?testStationID,
+                                <<
+                                    ~S<[2,"2","TransactionEvent",>,
+                                    ~S<{"eventType":"Started","timestamp":"2025-01-01T00:00:00Z",>,
+                                    ~S<"triggerReason":"Authorized","seqNo":1,"offline":true,>,
+                                    ~S<"transactionInfo":{"transactionId":"test"}}]>
+                                >>
+                            ),
+                            ocpp_client_recv(1000)
+                        end,
+                        RPCResult,
+                        begin
+                            DecodedRPC = ocpp_rpc:decode('2.0.1', RPCResult, [
+                                {expected, ~"TransactionEvent"}
+                            ]),
+                            ?assertMatch({ok, {callerror, _}}, DecodedRPC),
+                            {ok, {callerror, CallError}} = DecodedRPC,
+                            ?assertEqual('SecurityError', ocpp_rpc:error_code(CallError))
+                        end
                     ),
                     ?_stationTest(
                         "respond to BootNotificationRequest with status='Pending'",
@@ -1591,6 +1607,11 @@ client_boot_retry(StationID) ->
                     ~B<[2,"3","Heartbeat",{}]>
                 )
             ),
+            HBResult = ocpp_client_recv(1000),
+            DecodedRPC = ocpp_rpc:decode('2.0.1', HBResult, [{expected, ~"Heartbeat"}]),
+            ?assertMatch({ok, {callerror, _}}, DecodedRPC),
+            {ok, {callerror, CallError}} = DecodedRPC,
+            ?assertEqual('SecurityError', ocpp_rpc:error_code(CallError)),
             {ok, BootNotificationResponse} =
                 ocpp_message:new(
                     '2.0.1',

@@ -857,9 +857,9 @@ call_before_boot(Conn, StationID, Version) ->
         ocpp_station:rpc(StationID, ocpp_rpc:encode(RPC))
     end,
     ?assertEqual(ok, ocpp_test_client:do(Conn, F)),
-    ?assertError(
-        client_recv_timeout, ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(50) end)
-    ).
+    Result = ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(50) end),
+    {ok, {callerror, CallError}} = ocpp_rpc:decode(Version, Result, [{expected, ~"Heartbeat"}]),
+    ?assertEqual('SecurityError', ocpp_rpc:error_code(CallError)).
 
 call_station_before_boot(ConnHandle, StationID, Version) ->
     {ResetRequest, _ResetResponse} = reset_request(Version),
@@ -957,9 +957,9 @@ no_call_while_provisioning(Conn, StationID, Version) ->
     end,
     ok = ocpp_test_client:boot_to(Conn, provisioning),
     ?assertEqual(ok, ocpp_test_client:do(Conn, F)),
-    ?assertError(
-        client_recv_timeout, ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(50) end)
-    ).
+    Result = ocpp_test_client:do(Conn, fun() -> ocpp_test_client:recv(50) end),
+    {ok, {callerror, CallError}} = ocpp_rpc:decode(Version, Result, [{expected, ~"Heartbeat"}]),
+    ?assertEqual('SecurityError', ocpp_rpc:error_code(CallError)).
 
 repeat_boot_notification_request_while_provisioning(Conn, StationID, Version) ->
     BootNotificationRequest = ocpp_test_client:make_boot_notification_request(Version, []),
