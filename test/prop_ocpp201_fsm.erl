@@ -17,7 +17,8 @@
     booting/1,
     pending/1,
     idle/1,
-    idle/2
+    idle/2,
+    disconnected/2
 ]).
 -export([todo/1]).
 
@@ -79,8 +80,6 @@ prop_test() ->
 -record(data, {
     %% a call in progress from the station to the csms
     station_cip :: ocpp_rpc:call() | undefined,
-    %% list of station-initiated calls that timed out before response from csms
-    station_timed_out = [] :: [ocpp_rpc:call()],
     %% a call in progress from the csms to the station
     csms_cip :: {ocpp_rpc:call(), reference()} | undefined,
     %% list of CSMS-initiated calls that timed out before response from station
@@ -121,6 +120,21 @@ offline(Data) ->
             %%      attempt to call ocpp_station:disconnect/1
         ].
 
+disconnected(PrevState, _Data) ->
+    %% TODO time out pending station_calls
+    %% TODO time out pending csms_calls
+    %% TODO reboot -> offline (-> connected -> boot -> ...)
+    %% TODO csms_reply
+    [
+        {PrevState,
+            {call, station201_shim, connect_supported, [
+                ?STATIONID,
+                ?LET(Vsns, list(oneof(['1.6', '2.1', '2.0.1'])), shuffle(['2.0.1' | Vsns]))
+            ]}},
+        {history,
+            {call, station201_shim, connect_unsupported, [?STATIONID, list(oneof(['1.6', '2.1']))]}}
+    ].
+
 connected(Data) ->
     general_commands(Data) ++
         [
@@ -143,14 +157,6 @@ connected(Data) ->
                     ?LET(Vsns, list(oneof(['1.6', '2.1', '2.0.1'])), shuffle(['2.0.1' | Vsns]))
                 ]}},
             {offline, {call, station201_shim, station_disconnect, [?STATIONID]}}
-        ].
-
-reconnected(Data) ->
-    %% booted and accepted, reconnected after going offline without rebooting
-    general_commands(Data) ++
-        [
-            {history,
-                {call, ?MODULE, todo, ["allow heartbeat and other messages, allow boot, etc..."]}}
         ].
 
 booting(#data{station_cip = BootCall} = Data) ->
@@ -187,7 +193,10 @@ booting(#data{station_cip = BootCall} = Data) ->
                     ])
                 ]}
             },
-            {offline, {call, station201_shim, station_disconnect, [?STATIONID]}}
+            {
+                {disconnected, ?FUNCTION_NAME},
+                {call, station201_shim, station_disconnect, [?STATIONID]}
+            }
             %% TODO allow a subsequent BootNotification here to model the station timing out an retrying.
         ].
 
@@ -210,7 +219,10 @@ pending(Data) ->
                         },
                         ocpp_rpc:call(Payload, MessageID)
                     )
-                ]}}
+                ]}},
+            {{disconnected, ?FUNCTION_NAME}, [
+                {call, station201_shim, station_disconnect, [?STATIONID]}
+            ]}
         ]).
 
 idle(Data) ->
@@ -229,7 +241,10 @@ idle(Data) ->
                         end
                     )
                 ]}
-            }
+            },
+            {{disconnected, ?FUNCTION_NAME}, [
+                {call, station201_shim, station_disconnect, [?STATIONID]}
+            ]}
         ].
 
 idle(cip, #data{station_cip = PendingCall} = Data) ->
@@ -242,12 +257,21 @@ idle(cip, #data{station_cip = PendingCall} = Data) ->
                     ?STATIONID,
                     MessageID,
                     matching_response_payload(PendingCall)
-                ]}}
+                ]}},
+            {{disconnected, ?FUNCTION_NAME}, [
+                {call, station201_shim, station_disconnect, [?STATIONID]}
+            ]}
         ].
 
 %% Optional callback, weight modification of transitions
 weight(offline, connected, _Call) ->
     20;
+weight(connected, connected, {call, station201_shim, station_reply, _}) ->
+    5;
+weight(connected, connected, {call, station201_shim, csms_reply, _}) ->
+    5;
+weight(connected, connected, {call, station201_shim, csms_reply_, _}) ->
+    5;
 weight(connected, booting, _) ->
     20;
 weight(booting, pending, _) ->
@@ -262,10 +286,10 @@ weight(
     15;
 weight(connected, connected, {call, station201_shim, connect_already_connected, _}) ->
     5;
-weight(connected, offline, {call, station201_shim, station_disconnect, _}) ->
+weight(_, {disconnected, _}, {call, station201_shim, station_disconnect, _}) ->
     5;
 weight(pending, pending, _) ->
-    %% 3x more likely to stay in the pending state...
+    %% 2x more likely to stay in the pending state...
     2;
 weight(pending, _, _) ->
     %% ... than to leave the pending state
@@ -280,8 +304,6 @@ precondition(
     {call, station201_shim, station_reply_timedout_call, _}
 ) when length(TimedOut) =:= 0 ->
     false;
-%% TODO the following two clauses should be change to true and a test should be added that
-%%      in this state a csms_call should fail with an error like {error, not_prvosioned}
 precondition(
     _From, _To, #data{csms_cip = CiP}, {call, station201_shim, csms_call, _}
 ) when CiP =/= undefined ->
@@ -313,6 +335,10 @@ precondition(From, _To, _Data, {call, station201_shim, station_reply, _}) when
     false;
 precondition(_From, _To, #data{csms_cip = undefined}, {call, station201_shim, station_reply, _}) ->
     false;
+precondition(connected, disconnected, _, _) ->
+    false;
+precondition({disconnected, _}, connected, _, _) ->
+    false;
 precondition(_From, _To, #data{}, {call, _Mod, _Fun, _Args}) ->
     true.
 
@@ -320,16 +346,16 @@ precondition(_From, _To, #data{}, {call, _Mod, _Fun, _Args}) ->
 %% `{call, Mod, Fun, Args}', determine if the result `Res' (coming
 %% from the actual system) makes sense.
 postcondition(
-    offline,
-    offline,
+    _,
+    _,
     _Data,
     {call, station201_shim, connect_unsupported, _},
     {error, not_supported}
 ) ->
     true;
 postcondition(
-    offline,
-    connected,
+    _,
+    _,
     _Data,
     {call, station201_shim, connect_supported, _},
     {ok, '2.0.1'}
@@ -373,16 +399,8 @@ postcondition(
 ) ->
     true;
 postcondition(
-    connected,
-    offline,
-    _Data,
-    {call, station201_shim, station_disconnect, _},
-    ok
-) ->
-    true;
-postcondition(
-    booting,
-    offline,
+    _,
+    _,
     _Data,
     {call, station201_shim, station_disconnect, _},
     ok
@@ -605,23 +623,6 @@ next_state_data(_From, _To, Data, _Res, {call, station201_shim, StationReplyFun,
     StationReplyFun =:= station_reply_report_not_accepted
 ->
     Data#data{csms_cip = undefined};
-next_state_data(
-    connected,
-    offline,
-    Data,
-    _Res,
-    {call, station201_shim, station_disconnect, _}
-) ->
-    %% TODO Should csms_cip be cleared here? (and below?) what about pending->offline?
-    Data#data{station_cip = undefined, csms_cip = undefined};
-next_state_data(
-    booting,
-    offline,
-    Data,
-    _Res,
-    {call, station201_shim, station_disconnect, _}
-) ->
-    Data#data{station_cip = undefined, csms_cip = undefined};
 next_state_data(_From, _To, Data, _Res, {call, _Mod, _Fun, _Args}) ->
     NewData = Data,
     NewData.

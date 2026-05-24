@@ -37,8 +37,8 @@ process.
 
 -record(state, {
     stationid :: binary(),
-    %% flag indicating if the CSMS has sent a BootNotificationResponse
-    has_booted = false :: boolean(),
+    %% flag indicating the station has been accepted
+    accepted = false :: boolean(),
     connection ::
         {pending, gen_statem:from(), pid()} | {ocpp:version(), pid(), reference()} | undefined,
     %% pending call from CSMS to station - awaiting response from station
@@ -331,18 +331,17 @@ provisioning(
             rpcsend(State#state.connection, RPC),
             try ocpp_message:get(status, Message) of
                 'Accepted' ->
-                    {next_state, accepted, State#state{rpc_call = undefined, has_booted = true}, [
+                    {next_state, accepted, State#state{rpc_call = undefined, accepted = true}, [
                         {reply, From, ok}
                     ]};
                 'Rejected' ->
-                    {next_state, connected, State#state{rpc_call = undefined, has_booted = true}, [
+                    {next_state, connected, State#state{rpc_call = undefined}, [
                         {reply, From, ok}
                     ]};
                 'Pending' ->
-                    {next_state, boot_pending, State#state{rpc_call = undefined, has_booted = true},
-                        [
-                            {reply, From, ok}
-                        ]}
+                    {next_state, boot_pending, State#state{rpc_call = undefined}, [
+                        {reply, From, ok}
+                    ]}
             catch
                 error:{badkey, _} ->
                     logger:warning(
@@ -371,29 +370,24 @@ provisioning(info, {timeout, _, {rpccall, _}}, _State) ->
     keep_state_and_data;
 provisioning(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("Connection process ~p down before BootNotificationResponse sent~n~p", [Pid, Reason]),
-    {next_state, unprovisioned, State#state{connection = undefined, rpc_call = undefined}};
+    {next_state, offline, State#state{connection = undefined}};
 provisioning({call, From}, {disconnect, Pid}, #state{connection = {_, Pid, Ref}} = State) ->
     true = demonitor(Ref),
-    {next_state, unprovisioned, State#state{connection = undefined, rpc_call = undefined}, [
+    {next_state, offline, State#state{connection = undefined}, [
         {reply, From, ok}
     ]}.
 
 boot_pending(
     info,
     {'DOWN', Ref, process, Pid, Reason},
-    #state{connection = {_, Pid, Ref}, pending_call = {_, _, _, TRef}} = State
+    #state{connection = {_, Pid, Ref}} = State
 ) ->
     logger:info("Connection process ~p down while boot Pending~n~p", [Pid, Reason]),
-    ocpp_timer:cancel(TRef),
-    {next_state, unprovisioned, State#state{
-        connection = undefined, rpc_call = undefined, pending_call = undefined
-    }};
-boot_pending(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
-    logger:info("Connection process ~p down while boot Pending~n~p", [Pid, Reason]),
-    {next_state, unprovisioned, State#state{connection = undefined, rpc_call = undefined}};
+    {next_state, offline, State#state{connection = undefined}};
 boot_pending({call, From}, {disconnect, Pid}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("Station ~p disconnected while boot Pending", [Pid]),
-    {next_state, unprovisioned, State#state{connection = undefined, rpc_call = undefined}, [
+    true = demonitor(Ref),
+    {next_state, offline, State#state{connection = undefined}, [
         {reply, From, ok}
     ]};
 boot_pending({call, From}, {rpc, Pid, RPCBinary}, State) ->
@@ -564,8 +558,21 @@ offline({call, From}, {rpc, Pid, RPCBinary}, State) ->
         [State#state.stationid, Pid, RPCBinary]
     ),
     {keep_state_and_data, [{reply, From, {error, not_connected}}]};
-offline({call, From}, {connect, Pid, Versions}, State) ->
-    do_connect(Pid, From, Versions, State, reconnecting).
+offline({call, From}, {connect, Pid, Versions}, State) when State#state.accepted ->
+    do_connect(Pid, From, Versions, State, reconnecting);
+offline({call, From}, {connect, Pid, Versions}, State = #state{rpc_call = undefined}) ->
+    do_connect(Pid, From, Versions, State, connected);
+offline({call, From}, {connect, Pid, Versions}, State = #state{rpc_call = RPCCall}) ->
+    SuccessState =
+        case ocpp_rpc:action(RPCCall) of
+            ~"BootNotification" ->
+                provisioning;
+            _ ->
+                %% only state with accepted = false and a message other than a
+                %% BootNotification
+                boot_pending
+        end,
+    do_connect(Pid, From, Versions, State, SuccessState).
 
 reconnecting({call, From}, {rpc, Pid, RPCBinary}, State) ->
     case decode_rpc(RPCBinary, Pid, State) of
