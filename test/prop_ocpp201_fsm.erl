@@ -120,20 +120,26 @@ offline(Data) ->
             %%      attempt to call ocpp_station:disconnect/1
         ].
 
-disconnected(PrevState, _Data) ->
-    %% TODO time out pending station_calls
-    %% TODO time out pending csms_calls
+disconnected(PrevState, Data) ->
+    %% TODO time out pending station_calls (this is non-trivial)
     %% TODO reboot -> offline (-> connected -> boot -> ...)
-    %% TODO csms_reply
-    [
-        {PrevState,
-            {call, station201_shim, connect_supported, [
-                ?STATIONID,
-                ?LET(Vsns, list(oneof(['1.6', '2.1', '2.0.1'])), shuffle(['2.0.1' | Vsns]))
-            ]}},
-        {history,
-            {call, station201_shim, connect_unsupported, [?STATIONID, list(oneof(['1.6', '2.1']))]}}
-    ].
+    csms_call_pending_command(Data) ++
+        csms_generic_reply(Data) ++
+        [
+            {history,
+                {call, station201_shim, csms_call, [
+                    ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
+                ]}},
+            {PrevState,
+                {call, station201_shim, connect_supported, [
+                    ?STATIONID,
+                    ?LET(Vsns, list(oneof(['1.6', '2.1', '2.0.1'])), shuffle(['2.0.1' | Vsns]))
+                ]}},
+            {history,
+                {call, station201_shim, connect_unsupported, [
+                    ?STATIONID, list(oneof(['1.6', '2.1']))
+                ]}}
+        ].
 
 connected(Data) ->
     general_commands(Data) ++
@@ -287,7 +293,15 @@ weight(
 weight(connected, connected, {call, station201_shim, connect_already_connected, _}) ->
     5;
 weight(_, {disconnected, _}, {call, station201_shim, station_disconnect, _}) ->
-    5;
+    8;
+weight({disconnected, _}, _, {call, station201_shim, csms_call_with_cip, _}) ->
+    %% this is an unusual state. enusre we exercise it thoroughly
+    30;
+weight({disconnected, _}, _, {call, station201_shim, csms_rpccall_timeout, _}) ->
+    %% this is an unusual state. enusre we exercise it thoroughly
+    15;
+weight({disconnected, _}, {disconnected, _}, _) ->
+    3;
 weight(pending, pending, _) ->
     %% 2x more likely to stay in the pending state...
     2;
@@ -333,6 +347,8 @@ precondition(From, _To, _Data, {call, station201_shim, station_reply, _}) when
     From =:= booting
 ->
     false;
+precondition(_From, _To, #data{station_cip = undefined}, {call, station201_shim, csms_reply, _}) ->
+    false;
 precondition(_From, _To, #data{csms_cip = undefined}, {call, station201_shim, station_reply, _}) ->
     false;
 precondition(connected, disconnected, _, _) ->
@@ -370,6 +386,14 @@ postcondition(
 ) ->
     true;
 postcondition(
+    {disconnected, _},
+    _,
+    #data{csms_cip = undefined},
+    {call, station201_shim, csms_call, _},
+    {error, not_connected}
+) ->
+    refute_rpcsend();
+postcondition(
     From,
     From,
     #data{csms_cip = undefined},
@@ -385,9 +409,7 @@ postcondition(
     #data{csms_cip = {RPCCall, _}},
     {call, station201_shim, csms_call, _},
     {error, {call_pending, CallID}}
-) when
-    From =:= connected; From =:= booting
-->
+) ->
     CallID =:= ocpp_rpc:id(RPCCall) andalso
         refute_rpcsend();
 postcondition(
@@ -460,6 +482,14 @@ postcondition(
     ok
 ) ->
     assert_station_received_valid_reply(RPCCall);
+postcondition(
+    {disconnected, _},
+    _,
+    _Data,
+    {call, station201_shim, csms_reply, _},
+    {error, not_connected}
+) ->
+    refute_rpcsend();
 postcondition(offline, _, _, {call, station201_shim, csms_call, _}, {error, not_connected}) ->
     refute_rpcsend();
 postcondition(
@@ -576,6 +606,14 @@ next_state_data(booting, _, Data, _Res, {call, station201_shim, BootCommand, _})
     BootCommand =:= csms_reply_boot_rejected
 ->
     Data#data{station_cip = undefined};
+next_state_data(
+    {disconnected, _},
+    _,
+    Data,
+    _,
+    {call, station201_shim, csms_call, _}
+) ->
+    Data;
 next_state_data(
     _From,
     _To,
@@ -778,6 +816,16 @@ report_responses(#data{csms_cip = {RPCCall, _}}) ->
     end;
 report_responses(_) ->
     [].
+
+csms_generic_reply(#data{station_cip = undefined}) ->
+    [];
+csms_generic_reply(#data{station_cip = RPCCall}) ->
+    [
+        {history,
+            {call, station201_shim, csms_reply, [
+                ?STATIONID, RPCCall, matching_response_payload(RPCCall)
+            ]}}
+    ].
 
 station_generic_reply(#data{csms_cip = undefined}) ->
     [];

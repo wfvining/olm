@@ -162,7 +162,7 @@ unprovisioned({call, From}, {connect, Pid, Versions}, State) ->
     do_connect(Pid, From, Versions, State, connected);
 unprovisioned({call, From}, {rpc, _, _}, _State) ->
     {keep_state_and_data, [{reply, From, {error, not_connected}}]};
-unprovisioned({call, From}, _, State) ->
+unprovisioned({call, From}, _, _State) ->
     {keep_state_and_data, [{reply, From, {error, not_connected}}]}.
 
 connected(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
@@ -228,7 +228,7 @@ connected(
             ),
             {keep_state_and_data, [{reply, From, ok}]}
     end;
-connected({call, From}, {send, _}, #state{pending_call = {ID, _, _, _}}) ->
+connected({call, From}, {send, {call, _, _}}, #state{pending_call = {ID, _, _, _}}) ->
     {keep_state_and_data, [{reply, From, {error, {call_pending, ID}}}]};
 connected({call, From}, {send, _}, _) ->
     {keep_state_and_data, [{reply, From, {error, not_provisioned}}]};
@@ -438,10 +438,10 @@ boot_pending({call, From}, {send, {call, MessageID, Message}}, State) ->
     %% TODO prevent illegal messages from being sent.
     RPC = ocpp_rpc:call(Message, MessageID),
     case do_rpc_call(RPC, State) of
-        {ok, {Reply, NewState}} ->
-            {keep_state, NewState, [{reply, From, Reply}]};
+        {ok, NewState} ->
+            {keep_state, NewState, [{reply, From, ok}]};
         {error, Reason} ->
-            {keep_state, State, [{reply, From, Reason}]}
+            {keep_state, State, [{reply, From, {error, Reason}}]}
     end;
 boot_pending(
     {call, From}, {send, {callresult, MessageID, Message}}, #state{rpc_call = PendingCall} = State
@@ -481,7 +481,7 @@ accepted(info, {timeout, _, {rpccall, _}}, _State) ->
     keep_state_and_data;
 accepted(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("Connection process ~p down~n~p", [Pid, Reason]),
-    {next_state, offline, State#state{connection = undefined, rpc_call = undefined}};
+    {next_state, offline, State#state{connection = undefined}};
 accepted({call, From}, {rpc, Pid, RPCBinary}, State) ->
     case decode_rpc(RPCBinary, Pid, State) of
         {ok, {call, RPC}} ->
@@ -537,10 +537,10 @@ accepted(
 accepted({call, From}, {send, {call, MessageID, Message}}, State) ->
     RPC = ocpp_rpc:call(Message, MessageID),
     case do_rpc_call(RPC, State) of
-        {ok, {Reply, NewState}} ->
-            {keep_state, NewState, [{reply, From, Reply}]};
+        {ok, NewState} ->
+            {keep_state, NewState, [{reply, From, ok}]};
         {error, Reason} ->
-            {keep_state, State, [{reply, From, Reason}]}
+            {keep_state, State, [{reply, From, {error, Reason}}]}
     end.
 
 offline(
@@ -557,6 +557,12 @@ offline({call, From}, {rpc, Pid, RPCBinary}, State) ->
         "station ~p got RPC from ~p while in 'offline' state~nRPC: ~s",
         [State#state.stationid, Pid, RPCBinary]
     ),
+    {keep_state_and_data, [{reply, From, {error, not_connected}}]};
+offline({call, From}, {send, {call, ID, Message}}, State) ->
+    RPC = ocpp_rpc:call(Message, ID),
+    {error, Reason} = do_rpc_call(RPC, State),
+    {keep_state_and_data, [{reply, From, {error, Reason}}]};
+offline({call, From}, {send, {callresult, _RPCCall, _Response}}, _State) ->
     {keep_state_and_data, [{reply, From, {error, not_connected}}]};
 offline({call, From}, {connect, Pid, Versions}, State) when State#state.accepted ->
     do_connect(Pid, From, Versions, State, reconnecting);
@@ -624,7 +630,7 @@ reconnecting(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, 
     logger:info("station ~p disconnected while in reconnecting state.~nReason = ~p", [
         State#state.stationid, Reason
     ]),
-    {next_state, offline, State#state{connection = undefined, rpc_call = undefined}}.
+    {next_state, offline, State#state{connection = undefined}}.
 
 do_connect(Pid, From, Versions, State, SuccessState) ->
     case ocpp_station_manager:connect(State#state.stationid, Versions) of
@@ -651,6 +657,8 @@ do_connect(Pid, From, Versions, State, SuccessState) ->
             {keep_state_and_data, [{reply, From, {error, Reason}}]}
     end.
 
+do_rpc_call(RPC, #state{pending_call = undefined, connection = undefined}) ->
+    {error, not_connected};
 do_rpc_call(RPC, #state{pending_call = undefined} = State) ->
     rpcsend(State#state.connection, RPC),
     Message = ocpp_rpc:payload(RPC),
@@ -658,10 +666,9 @@ do_rpc_call(RPC, #state{pending_call = undefined} = State) ->
     {ok, TRef} = ocpp_timer:set_timeout(
         State#state.rpccall_timeout, {rpccall, MessageID}
     ),
-    {ok,
-        {ok, State#state{pending_call = {MessageID, ocpp_message:action(Message), Message, TRef}}}};
+    {ok, State#state{pending_call = {MessageID, ocpp_message:action(Message), Message, TRef}}};
 do_rpc_call(_RPC, #state{pending_call = {ID, _, _, _}}) ->
-    {error, {error, {call_pending, ID}}}.
+    {error, {call_pending, ID}}.
 
 decode_rpc(RPCBinary, Pid, #state{connection = {Version, Pid, _}} = State) ->
     Opts =
