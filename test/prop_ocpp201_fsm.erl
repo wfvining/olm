@@ -20,7 +20,7 @@
     idle/2,
     disconnected/2
 ]).
--export([todo/1]).
+-export([todo/1, reboot/0]).
 
 -define(STATIONID, atom_to_binary(?MODULE)).
 
@@ -122,14 +122,9 @@ offline(Data) ->
 
 disconnected(PrevState, Data) ->
     %% TODO time out pending station_calls (this is non-trivial)
-    %% TODO reboot -> offline (-> connected -> boot -> ...)
-    csms_call_pending_command(Data) ++
+    csms_call_command(Data) ++
         csms_generic_reply(Data) ++
         [
-            {history,
-                {call, station201_shim, csms_call, [
-                    ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
-                ]}},
             {PrevState,
                 {call, station201_shim, connect_supported, [
                     ?STATIONID,
@@ -138,7 +133,8 @@ disconnected(PrevState, Data) ->
             {history,
                 {call, station201_shim, connect_unsupported, [
                     ?STATIONID, list(oneof(['1.6', '2.1']))
-                ]}}
+                ]}},
+            {offline, {call, ?MODULE, reboot, []}}
         ].
 
 connected(Data) ->
@@ -300,6 +296,16 @@ weight({disconnected, _}, _, {call, station201_shim, csms_call_with_cip, _}) ->
 weight({disconnected, _}, _, {call, station201_shim, csms_rpccall_timeout, _}) ->
     %% this is an unusual state. enusre we exercise it thoroughly
     15;
+weight({disconnected, {idle, cip}}, offline, _) ->
+    6;
+weight({disconnected, State}, offline, _) when
+    State =:= {idle, cip};
+    State =:= boot_pending;
+    State =:= booting
+->
+    6;
+weight({disconnected, idle}, offline, _) ->
+    2;
 weight({disconnected, _}, {disconnected, _}, _) ->
     3;
 weight(pending, pending, _) ->
@@ -326,7 +332,7 @@ precondition(
     pending, _, #data{csms_cip = CiP}, {call, station201_shim, csms_call, [_, _, Message]}
 ) ->
     AllowedActions = [~"GetVariables", ~"SetVariables", ~"GetReport", ~"GetBaseReport"],
-    CiP =/= undefined andalso not lists:member(ocpp_message:action(Message), AllowedActions);
+    CiP =:= undefined andalso not lists:member(ocpp_message:action(Message), AllowedActions);
 precondition(
     _From, _To, #data{csms_cip = CiP}, {call, station201_shim, csms_call_get_base_report, _}
 ) when CiP =/= undefined ->
@@ -343,7 +349,6 @@ precondition(
 ->
     false;
 precondition(From, _To, _Data, {call, station201_shim, station_reply, _}) when
-    From =:= connected;
     From =:= booting
 ->
     false;
@@ -355,12 +360,18 @@ precondition(connected, disconnected, _, _) ->
     false;
 precondition({disconnected, _}, connected, _, _) ->
     false;
+precondition({disconnected, _}, _, _, {call, ?MODULE, reboot, []}) ->
+    true;
+precondition(_, _, _, {call, ?MODULE, reboot, []}) ->
+    false;
 precondition(_From, _To, #data{}, {call, _Mod, _Fun, _Args}) ->
     true.
 
 %% Given the state states and data *prior* to the call
 %% `{call, Mod, Fun, Args}', determine if the result `Res' (coming
 %% from the actual system) makes sense.
+postcondition(_, _, _, {call, ?MODULE, reboot, []}, ok) ->
+    true;
 postcondition(
     _,
     _,
@@ -524,6 +535,8 @@ postcondition(
     ok
 ) ->
     assert_station_received_call(MessageID);
+postcondition(pending, _, _, {call, station201_shim, csms_call_config, [_, MessageID, _]}, ok) ->
+    assert_station_received_call(MessageID);
 postcondition(
     _From,
     _To,
@@ -540,6 +553,10 @@ postcondition(
     ok
 ) ->
     assert_station_received_call(MessageID);
+postcondition(
+    {offline, _}, _, _, {call, station201_shim, station_reply, _}, {error, not_connected}
+) ->
+    true;
 postcondition(
     _From,
     _To,
@@ -592,6 +609,24 @@ postcondition(
 
 %% Assuming the postcondition for a call was true, update the model
 %% accordingly for the test to proceed.
+next_state_data({disconnected, _}, _, Data, _Res, {call, ?MODULE, reboot, []}) ->
+    %% Charging station state does not persist across reboot. This
+    %% includes TriggerMessageRequests (1) that were accepted as well
+    %% as any pending RPCCALL (2).
+    %%
+    %% 1. TriggerMessage - spec does not require persistence.
+    %% 2. If the station sends a BootNotification it MUST have
+    %%    abandoned its pending CALL (FR.01); therefore, to simplify
+    %%    the model, the state is cleared here to allow a clean
+    %%    reboot.
+    %%
+    %% The CSMS side does not reset here. Its pending call will time
+    %% out on its own or be abandoned upon receipt of a
+    %% BootNotification indicating it will not receive a response
+    %% because the station rebooted. Pending state such as accepted
+    %% message triggers and reports will be reset upon receiving a new
+    %% BootNotificationRequest.
+    Data#data{station_cip = undefined, accepted_triggers = [], rejected_triggers = []};
 next_state_data(
     idle, {idle, cip}, Data, _Res, {call, station201_shim, station_call_heartbeat, [_, RPCCall]}
 ) ->
@@ -615,12 +650,24 @@ next_state_data(
 ) ->
     Data;
 next_state_data(
+    From,
+    _,
+    Data,
+    _,
+    {call, station201_shim, csms_call, _}
+) when
+    From =:= connected;
+    From =:= offline;
+    From =:= booting
+->
+    Data;
+next_state_data(
     _From,
     _To,
     Data,
     _Res,
-    {call, station201_shim, csms_call, [_, MessageID, Request]}
-) ->
+    {call, station201_shim, Fun, [_, MessageID, Request]}
+) when Fun =:= csms_call; Fun =:= csms_call_config ->
     Ref = update_timeout_mock(MessageID),
     Data#data{csms_cip = {ocpp_rpc:call(Request, MessageID), Ref}};
 next_state_data(
@@ -680,9 +727,14 @@ timedout_response(#data{csms_timed_out = TimedOut}) ->
             ]}}
     ].
 
-csms_call_pending_command(#data{csms_cip = undefined}) ->
-    [];
-csms_call_pending_command(#data{csms_cip = {RPCCall, TimerRef}}) ->
+csms_call_command(#data{csms_cip = undefined}) ->
+    [
+        {history,
+            {call, station201_shim, csms_call, [
+                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
+            ]}}
+    ];
+csms_call_command(#data{csms_cip = {RPCCall, TimerRef}}) ->
     [
         {history,
             {call, station201_shim, csms_call_with_cip, [
@@ -765,7 +817,7 @@ csms_config_call() ->
         ocpp_message_gen:message('2.0.1', ~"GetVariablesRequest")
     ]),
     [
-        {history, {call, station201_shim, csms_call, [?STATIONID, messageid(), Request]}}
+        {history, {call, station201_shim, csms_call_config, [?STATIONID, messageid(), Request]}}
     ].
 
 %% CSMS-initiated report commands (B07 GetBaseReport, B08 GetReport).
@@ -838,11 +890,16 @@ station_generic_reply(#data{csms_cip = {RPCCall, _}}) ->
     ].
 
 general_commands(Data) ->
-    csms_call_pending_command(Data) ++ station_generic_reply(Data).
+    csms_call_command(Data) ++ station_generic_reply(Data).
 
 todo(What) ->
     io:format("WARNING - TODO (~s)\n", [What]),
     todo.
+
+reboot() ->
+    %% This is a shim that serves a sentinel indicating certain model
+    %% state should be updated to reflect a station reboot.
+    ok.
 
 %% Helper to generate unique message IDs
 update_timeout_mock(MessageID) ->

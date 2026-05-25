@@ -12,6 +12,7 @@
     station_call_heartbeat/2,
     csms_call/3,
     csms_call_with_cip/3,
+    csms_call_config/3,
     csms_call_get_base_report/3,
     csms_call_get_report/3,
     csms_call_trigger_message/3,
@@ -55,6 +56,9 @@ station_call_heartbeat(StationID, RPCCall) ->
     ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
 
 csms_call(StationID, MessageID, Request) ->
+    ocpp_station:call(StationID, MessageID, Request).
+
+csms_call_config(StationID, MessageID, Request) ->
     ocpp_station:call(StationID, MessageID, Request).
 
 csms_call_get_base_report(StationID, MessageID, Request) ->
