@@ -4,7 +4,7 @@
 
 -include_lib("proper/include/proper.hrl").
 
--export([pdu/2, pdu/3, message/1, message/2, message/3, request/1]).
+-export([pdu/2, pdu/3, message/1, message/2, message/3, request/1, response/1]).
 
 %% 1. load schemas
 %% 2. load overrides
@@ -60,6 +60,15 @@ request(Version) ->
         message(Version, MessageType)
      || MessageType <- maps:keys(MTypes),
         binary:match(MessageType, ~"Request", [{scope, {byte_size(MessageType), -7}}]) =/= nomatch
+    ]).
+
+response(Version) ->
+    load_schema(Version, ~"BootNotificationResponse"),
+    MTypes = persistent_term:get({?MODULE, Version}),
+    oneof([
+        message(Version, MessageType)
+     || MessageType <- maps:keys(MTypes),
+        binary:match(MessageType, ~"Response", [{scope, {byte_size(MessageType), -8}}]) =/= nomatch
     ]).
 
 %% XXX This just removes keys from top level object. Full support for
