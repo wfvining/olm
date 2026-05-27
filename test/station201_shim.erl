@@ -6,6 +6,7 @@
     connect_already_connected/2,
     station_disconnect/1,
     rpc_not_connected/2,
+    station_call/2,
     station_call_before_boot/2,
     station_call_security_error/2,
     station_call_boot/2,
@@ -26,7 +27,8 @@
     station_reply_report_accepted/3,
     station_reply_report_not_accepted/3,
     station_reply_timedout_call/2,
-    station_reply_timedout_call/3
+    station_reply_timedout_call/3,
+    station_power_cycle/0
 ]).
 
 connect_unsupported(StationID, Versions) ->
@@ -41,6 +43,9 @@ station_disconnect(StationID) ->
 
 rpc_not_connected(StationID, RPCBinary) ->
     ocpp_station:rpc(StationID, RPCBinary).
+
+station_call(StationID, RPCCall) ->
+    ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
 
 station_call_before_boot(StationID, Message) ->
     RPCCall = ocpp_rpc:call(Message, messageid()),
@@ -107,6 +112,9 @@ station_reply(StationID, {RPCCall, Payload}) ->
 station_reply(StationID, RPCCall, Payload) ->
     ID = ocpp_rpc:id(RPCCall),
     ocpp_station:rpc(StationID, ocpp_rpc:encode(ocpp_rpc:callresult(Payload, ID))).
+
+station_power_cycle() ->
+    ok.
 
 messageid() ->
     integer_to_binary(erlang:unique_integer([positive]), 36).
