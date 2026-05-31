@@ -264,14 +264,6 @@ provisioning({call, From}, {rpc, Pid, RPCBinary}, State = #state{rpc_call = Pend
                     {next_state, provisioning, State#state{rpc_call = RPCCall}, [
                         {reply, From, ok}
                     ]};
-                ~"BootNotificationRequest" when MessageID =:= PendingID ->
-                    logger:warning(
-                        "Received invalid BootNotificationRequest with duplicate message ID: ~p",
-                        [MessageID]
-                    ),
-                    {keep_state_and_data, [
-                        {reply, From, ok}
-                    ]};
                 MessageType ->
                     logger:warning(
                         "~p got unexpected ~p message before station accepted (MessageID = ~p)",
@@ -288,7 +280,7 @@ provisioning({call, From}, {rpc, Pid, RPCBinary}, State = #state{rpc_call = Pend
                             ]
                         )
                     ),
-                    {keep_state_and_data, [{reply, From, ok}]}
+                    {next_state, connected, State#state{rpc_call = undefined}, [{reply, From, ok}]}
             end;
         {ok, {callresult, CallResult}} ->
             logger:warning(
