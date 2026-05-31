@@ -459,7 +459,9 @@ boot_pending(
     logger:info("RPCCALL to station timed out (MessageID = ~p)", [MessageID]),
     {keep_state, State#state{pending_call = undefined}};
 boot_pending(info, {timeout, _, {rpccall, _}}, _State) ->
-    keep_state_and_data.
+    keep_state_and_data;
+boot_pending({call, From}, {connect, _, _}, _State) ->
+    {keep_state_and_data, [{reply, From, {error, already_connected}}]}.
 
 accepted(
     info,
@@ -473,6 +475,12 @@ accepted(info, {timeout, _, {rpccall, _}}, _State) ->
 accepted(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("Connection process ~p down~n~p", [Pid, Reason]),
     {next_state, offline, State#state{connection = undefined}};
+accepted({call, From}, {disconnect, Pid}, #state{connection = {_, Pid, Ref}} = State) ->
+    logger:info("Station ~p disconnected", [State#state.stationid]),
+    demonitor(Ref),
+    {next_state, offline, State#state{connection = undefined}, [{reply, From, ok}]};
+accepted({call, From}, {connect, _, _}, _State) ->
+    {keep_state_and_data, [{reply, From, {error, already_connected}}]};
 accepted({call, From}, {rpc, Pid, RPCBinary}, State) ->
     case decode_rpc(RPCBinary, Pid, State) of
         {ok, {call, RPC}} ->
@@ -617,6 +625,10 @@ reconnecting(
     {keep_state, State#state{pending_call = undefined}};
 reconnecting(info, {timeout, _, {rpccall, _}}, _State) ->
     keep_state_and_data;
+reconnecting({call, From}, {disconnect, Pid}, #state{connection = {_, Pid, Ref}} = State) ->
+    logger:info("Station ~p disconnected", [State#state.stationid]),
+    demonitor(Ref),
+    {next_state, offline, State#state{connection = undefined}, [{reply, From, ok}]};
 reconnecting(info, {'DOWN', Ref, process, Pid, Reason}, #state{connection = {_, Pid, Ref}} = State) ->
     logger:info("station ~p disconnected while in reconnecting state.~nReason = ~p", [
         State#state.stationid, Reason
