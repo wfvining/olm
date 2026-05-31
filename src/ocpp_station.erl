@@ -316,12 +316,12 @@ provisioning({call, From}, {send, {call, _, _}}, _State) ->
 provisioning(
     {call, From}, {send, {callresult, MessageID, Message}}, #state{rpc_call = PendingCall} = State
 ) ->
+    ResultAction = ocpp_message:action(Message),
     case ocpp_rpc:id(PendingCall) of
-        PendingID when MessageID =:= PendingID ->
-            %% the pending call must be a boot notification here.
+        PendingID when MessageID =:= PendingID, ResultAction =:= ~"BootNotification" ->
             RPC = ocpp_rpc:callresult(Message, MessageID),
             rpcsend(State#state.connection, RPC),
-            try ocpp_message:get(status, Message) of
+            case ocpp_message:get(status, Message) of
                 'Accepted' ->
                     {next_state, accepted, State#state{rpc_call = undefined, accepted = true}, [
                         {reply, From, ok}
@@ -334,20 +334,19 @@ provisioning(
                     {next_state, boot_pending, State#state{rpc_call = undefined}, [
                         {reply, From, ok}
                     ]}
-            catch
-                error:{badkey, _} ->
-                    logger:warning(
-                        "response is not a valid BootNotificationResponse~nID:~p~n~p",
-                        [MessageID, Message]
-                    ),
-                    {keep_state_and_data, [{reply, From, {error, bad_message}}]}
             end;
         PendingID when MessageID =/= PendingID ->
             logger:warning(
                 "Got response for message ~p, but ~p is pending~nresponse dropped.",
                 [MessageID, PendingID]
             ),
-            {keep_state_and_data, [{reply, From, {error, {call_not_pending, MessageID}}}]}
+            {keep_state_and_data, [{reply, From, {error, {call_not_pending, MessageID}}}]};
+        _ when ResultAction =/= ~"BootNotification" ->
+            logger:warning(
+                "CALLRESULT(ID=~p) response action (~p) does not match pending call (~p)~n~p",
+                [MessageID, ResultAction, ocpp_rpc:action(PendingCall), Message]
+            ),
+            {keep_state_and_data, [{reply, From, {error, bad_message}}]}
     end;
 provisioning({call, From}, {connect, _, _}, _) ->
     {keep_state_and_data, [{reply, From, {error, already_connected}}]};
