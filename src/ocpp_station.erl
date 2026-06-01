@@ -351,7 +351,7 @@ provisioning(
                 "CALLRESULT(ID=~p) response action (~p) does not match pending call (~p)~n~p",
                 [MessageID, ResultAction, ocpp_rpc:action(PendingCall), Message]
             ),
-            {keep_state_and_data, [{reply, From, {error, bad_message}}]}
+            {keep_state_and_data, [{reply, From, {error, badaction}}]}
     end;
 provisioning({call, From}, {connect, _, _}, _) ->
     {keep_state_and_data, [{reply, From, {error, already_connected}}]};
@@ -431,13 +431,33 @@ boot_pending({call, From}, {rpc, Pid, RPCBinary}, State) ->
             {keep_state_and_data, [{reply, From, ok}]}
     end;
 boot_pending({call, From}, {send, {call, MessageID, Message}}, State) ->
-    %% TODO prevent illegal messages from being sent.
     RPC = ocpp_rpc:call(Message, MessageID),
-    case do_rpc_call(RPC, State) of
-        {ok, NewState} ->
-            {keep_state, NewState, [{reply, From, ok}]};
-        {error, Reason} ->
-            {keep_state, State, [{reply, From, {error, Reason}}]}
+    case ocpp_message:action(Message) of
+        Action when
+            Action =:= ~"SetVariables";
+            Action =:= ~"GetVariables";
+            Action =:= ~"GetReport";
+            Action =:= ~"GetBaseReport";
+            Action =:= ~"TriggerMessage"
+        ->
+            case do_rpc_call(RPC, State) of
+                {ok, NewState} ->
+                    {keep_state, NewState, [{reply, From, ok}]};
+                {error, Reason} ->
+                    {keep_state, State, [{reply, From, {error, Reason}}]}
+            end;
+        %% XXX this is a bit ugly - should probably refacor soon. The
+        %% concept here is that ocpp_statio:call errors are returned
+        %% predictably with a consistent priority:
+        %% 1. {error, not_connected}
+        %% 2. {error, {call_pending, _}} (if not 1)
+        %% 3. {error, badaction} (if not 1 and not 2)
+        _ when State#state.pending_call =:= undefined ->
+            {keep_state_and_data, [{reply, From, {error, badaction}}]};
+        _ when State#state.pending_call =/= undefined ->
+            {keep_state_and_data, [
+                {reply, From, {error, {call_pending, element(1, State#state.pending_call)}}}
+            ]}
     end;
 boot_pending(
     {call, From}, {send, {callresult, MessageID, Message}}, #state{rpc_call = PendingCall} = State
@@ -673,7 +693,7 @@ do_connect(Pid, From, Versions, State, SuccessState) ->
             {keep_state_and_data, [{reply, From, {error, Reason}}]}
     end.
 
-do_rpc_call(RPC, #state{pending_call = undefined, connection = undefined}) ->
+do_rpc_call(_RPC, #state{connection = undefined}) ->
     {error, not_connected};
 do_rpc_call(RPC, #state{pending_call = undefined} = State) ->
     rpcsend(State#state.connection, RPC),
