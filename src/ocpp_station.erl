@@ -514,7 +514,7 @@ accepted({call, From}, {rpc, Pid, RPCBinary}, State) ->
             handle_callresult(RPC, From, State);
         {error, not_connected} ->
             logger:warning(
-                "got RPC from process that is not connected to station ~p~nRPC: ~s",
+                "got RPC from process that is not connected to station ~p~nRPC: ~p",
                 [State#state.stationid, RPCBinary]
             ),
             {keep_state_and_data, [{reply, From, {error, not_connected}}]};
@@ -578,7 +578,7 @@ offline(info, {timeout, _, {rpccall, _}}, _State) ->
     keep_state_and_data;
 offline({call, From}, {rpc, Pid, RPCBinary}, State) ->
     logger:warning(
-        "station ~p got RPC from ~p while in 'offline' state~nRPC: ~s",
+        "station ~p got RPC from ~p while in 'offline' state~nRPC: ~p",
         [State#state.stationid, Pid, RPCBinary]
     ),
     {keep_state_and_data, [{reply, From, {error, not_connected}}]};
@@ -625,7 +625,7 @@ reconnecting({call, From}, {rpc, Pid, RPCBinary}, State) ->
             end;
         {error, not_connected} ->
             logger:warning(
-                "got RPC from process that is not connected to station ~p~nRPC: ~s",
+                "got RPC from process that is not connected to station ~p~nRPC: ~p",
                 [State#state.stationid, RPCBinary]
             ),
             {keep_state_and_data, [{reply, From, {error, not_connected}}]};
