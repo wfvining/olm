@@ -182,11 +182,13 @@ precondition(
     {booting, connected, _},
     {unprovisioned, connected, _},
     _Data,
-    {call, _, station_call, [_, RPCCall]}
+    {call, _, station_call_security_error, [_, RPCCall]}
 ) ->
     %% any message other than a BootNotification MUST change the state to unprovisioned
     ocpp_rpc:action(RPCCall) =/= ~"BootNotification";
-precondition(From, From, _Data, {call, _, station_call, [_, RPCCall]}) ->
+precondition(From, From, _Data, {call, _, Fun, [_, RPCCall]}) when
+    Fun =:= station_call; Fun =:= station_call_security_error
+->
     ocpp_rpc:action(RPCCall) =/= ~"BootNotification";
 precondition({_, ConnState, _} = From, From, _Data, {call, _, Fun, _}) when
     Fun =:= csms_call;
@@ -208,6 +210,8 @@ weight({booting, connected, _}, {pending, connected, _}, _) ->
 weight({booting, connected, _}, {accepted, connected, _}, _) ->
     2;
 weight({pending, connected, _}, _, {call, _, csms_call, _}) ->
+    5;
+weight(_, _, {call, _, station_call_security_error, _}) ->
     5;
 weight(_From, _To, _Call) ->
     1.
@@ -355,7 +359,7 @@ postcondition_unprovisioned(
 ->
     refute_rpcsend();
 postcondition_unprovisioned(
-    {_, connected, _} = From, From, _Data, {call, _, station_call, [_, RPCCall]}, ok
+    {_, connected, _} = From, From, _Data, {call, _, station_call_security_error, [_, RPCCall]}, ok
 ) ->
     %% Any CALL that does not change state causes a SecurityError when unprovisioned
     assert_callerror(RPCCall, 'SecurityError');
@@ -374,7 +378,7 @@ postcondition_booting(
     {_, connected, _},
     {unprovisioned, connected, _},
     _Data,
-    {call, _, station_call, [_, RPCCall]},
+    {call, _, station_call_security_error, [_, RPCCall]},
     ok
 ) ->
     assert_callerror(RPCCall, 'SecurityError');
@@ -420,7 +424,7 @@ postcondition_pending(
 ) ->
     refute_rpcsend() andalso ocpp_rpc:id(RPCCall) =:= ID;
 postcondition_pending(
-    {_, connected, _} = From, From, _Data, {call, _, station_call, [_, RPCCall]}, ok
+    {_, connected, _} = From, From, _Data, {call, _, station_call_security_error, [_, RPCCall]}, ok
 ) ->
     assert_callerror(RPCCall, 'SecurityError');
 postcondition_pending(_From, _To, _Data, _Call, _Result) ->
@@ -630,7 +634,7 @@ station_call_reply(unprovisioned, connected, {up, _}, _Data) ->
             ]}
         },
         {history,
-            {call, station201_shim, station_call, [
+            {call, station201_shim, station_call_security_error, [
                 ?STATIONID,
                 rpccall(
                     ?SUCHTHAT(
@@ -669,7 +673,7 @@ station_call_reply(booting, connected, StationState, _Data) ->
         },
         {
             {unprovisioned, connected, StationState},
-            {call, station201_shim, station_call, [
+            {call, station201_shim, station_call_security_error, [
                 ?STATIONID,
                 rpccall(
                     ?SUCHTHAT(
