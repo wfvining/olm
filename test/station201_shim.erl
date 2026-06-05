@@ -11,12 +11,7 @@
     station_call_security_error/2,
     station_call_boot/2,
     station_call_heartbeat/2,
-    csms_call/3,
-    csms_call_with_cip/3,
-    csms_call_config/3,
-    csms_call_get_base_report/3,
-    csms_call_get_report/3,
-    csms_call_trigger_message/3,
+    csms_call/4,
     csms_rpccall_timeout/3,
     csms_reply/3,
     csms_reply_boot_accepted/3,
@@ -60,22 +55,7 @@ station_call_boot(StationID, RPCCall) ->
 station_call_heartbeat(StationID, RPCCall) ->
     ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
 
-csms_call(StationID, MessageID, Request) ->
-    ocpp_station:call(StationID, MessageID, Request).
-
-csms_call_config(StationID, MessageID, Request) ->
-    ocpp_station:call(StationID, MessageID, Request).
-
-csms_call_get_base_report(StationID, MessageID, Request) ->
-    ocpp_station:call(StationID, MessageID, Request).
-
-csms_call_get_report(StationID, MessageID, Request) ->
-    ocpp_station:call(StationID, MessageID, Request).
-
-csms_call_with_cip(StationID, MessageID, Request) ->
-    ocpp_station:call(StationID, MessageID, Request).
-
-csms_call_trigger_message(StationID, MessageID, Request) ->
+csms_call(StationID, MessageID, Request, _TRef) ->
     ocpp_station:call(StationID, MessageID, Request).
 
 csms_rpccall_timeout(StationID, RPCCall, TimerRef) ->

@@ -240,7 +240,7 @@ next_state_data(
     From,
     Data = #data{csms_cip = undefined},
     _Result,
-    {call, _, csms_call, [_, MessageID, Message]}
+    {call, _, csms_call, [_, MessageID, Message, Ref]}
 ) ->
     ConfigMessages = [
         ~"SetVariablesRequest",
@@ -251,7 +251,6 @@ next_state_data(
     ],
     case lists:member(ocpp_message:type(Message), ConfigMessages) of
         true ->
-            Ref = erlang:make_ref(),
             ok = meck:expect(ocpp_timer, set_timeout, ['_', {rpccall, MessageID}], {ok, Ref}),
             RPC = ocpp_rpc:call(Message, MessageID),
             Data#data{csms_cip = {RPC, Ref}};
@@ -396,7 +395,11 @@ postcondition_booting(From, To, _Data, Call, Result) ->
     false.
 
 postcondition_pending(
-    From, From, #data{csms_cip = undefined}, {call, _, csms_call, [_, MessageID, Message]}, Result
+    From,
+    From,
+    #data{csms_cip = undefined},
+    {call, _, csms_call, [_, MessageID, Message, _]},
+    Result
 ) ->
     ConfigMessages = [
         ~"SetVariablesRequest",
@@ -468,7 +471,7 @@ csms_call_reply(unprovisioned, _ConnectionState, _StationState, _Data) ->
     [
         {history,
             {call, station201_shim, csms_call, [
-                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
+                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
             ]}},
         {history,
             {call, station201_shim, csms_reply, [
@@ -523,7 +526,7 @@ csms_call_reply(booting, connected, StationState, Data) ->
             ]}},
         {history,
             {call, station201_shim, csms_call, [
-                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
+                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
             ]}}
     ];
 csms_call_reply(booting, disconnected, _StationState, Data) ->
@@ -545,7 +548,7 @@ csms_call_reply(booting, disconnected, _StationState, Data) ->
             ]}},
         {history,
             {call, station201_shim, csms_call, [
-                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
+                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
             ]}}
     ];
 csms_call_reply(pending, connected, _StationState, #data{csms_cip = undefined}) ->
@@ -581,14 +584,14 @@ csms_call_reply(pending, disconnected, _StationState, #data{csms_cip = undefined
     [
         {history,
             {call, station201_shim, csms_call, [
-                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
+                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
             ]}}
     ];
 csms_call_reply(pending, _, _StationState, #data{csms_cip = {RPCCall, Ref}}) ->
     [
         {history,
             {call, station201_shim, csms_call, [
-                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')
+                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
             ]}},
         {history, {call, station201_shim, csms_rpccall_timeout, [?STATIONID, RPCCall, Ref]}}
     ].
