@@ -60,7 +60,8 @@ csms_call(StationID, MessageID, Request, _TRef) ->
 
 csms_rpccall_timeout(StationID, RPCCall, TimerRef) ->
     Pid = ocpp_station:whereis(StationID),
-    Pid ! {timeout, TimerRef, {rpccall, ocpp_rpc:id(RPCCall)}}.
+    Pid ! {timeout, TimerRef, {rpccall, ocpp_rpc:id(RPCCall)}},
+    ok.
 
 csms_reply(StationID, MessageID, Payload) ->
     ocpp_station:reply(StationID, MessageID, Payload).

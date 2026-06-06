@@ -31,7 +31,10 @@
     %% calls that reach the CSMS and are "accepted" for processing
     %% (i.e. calls that can receive a response)
     station_cip :: ocpp_rpc:call() | undefined,
-    csms_cip :: {ocpp_rpc:call(), reference()} | undefined
+    csms_cip :: {ocpp_rpc:call(), reference()} | undefined,
+    csms_timedout :: ocpp_rpc:call() | undefined,
+    triggers = {[], []} :: {ocpp_message:message(), ocpp_message:message()},
+    report_requests = [] :: [{ocpp_message:message(), integer()}]
 }).
 
 prop_test() ->
@@ -129,6 +132,8 @@ accepted(connected, StationState, Data) ->
 accepted(disconnected, StationState, Data) ->
     connect_disconnect_power(?FUNCTION_NAME, disconnected, StationState).
 
+precondition(_, _, _, {call, station201_shim, csms_rpccall_timeout, _}) ->
+    true;
 precondition(
     {AppState, ConnFrom, {up, Flag}},
     {AppState, ConnTo, {up, Flag}},
@@ -211,11 +216,19 @@ weight({booting, connected, _}, {accepted, connected, _}, _) ->
     2;
 weight({pending, connected, _}, _, {call, _, csms_call, _}) ->
     5;
+weight({pending, connected, _}, _, {call, _, station_call, _}) ->
+    5;
 weight(_, _, {call, _, station_call_security_error, _}) ->
     5;
+weight({pending, connected, _}, _, {call, _, station_reply, _}) ->
+    15;
 weight(_From, _To, _Call) ->
     1.
 
+next_state_data(
+    _, _, #data{csms_cip = {RPCCall, TRef}} = Data, _, {call, _, csms_rpccall_timeout, [_, _, TRef]}
+) ->
+    Data#data{csms_cip = undefined, csms_timedout = RPCCall};
 next_state_data(
     {_, connected, {up, _}},
     {booting, connected, {up, clean}},
@@ -261,9 +274,28 @@ next_state_data(
         false ->
             Data
     end;
+next_state_data(
+    {AppState, connected, _} = From,
+    From,
+    Data = #data{csms_cip = {RPCCall, _TRef}},
+    _Result,
+    {call, _, station_reply, [_, RPCCall, Reply]}
+) when AppState =:= accepted; AppState =:= pending ->
+    %% RPCCall in cip field and in the args are the same -> same ID.
+    CiPAction = ocpp_rpc:action(RPCCall),
+    ReplyAction = ocpp_message:action(Reply),
+    if
+        ReplyAction =:= CiPAction ->
+            ?debugFmt("cleared csms_cip - ~p ~p", [RPCCall, Reply]),
+            Data#data{csms_cip = undefined, csms_timedout = undefined};
+        ReplyAction =/= CiPAction ->
+            Data
+    end;
 next_state_data(_From, _To, Data, _Result, _Call) ->
     Data.
 
+postcondition(_, _, _, {call, _, csms_rpccall_timeout, _}, ok) ->
+    true;
 postcondition({_, _, {up, _}}, {_, _, {up, _}}, _Data, {call, _, station_power_cycle, _}, ok) ->
     true;
 postcondition(
@@ -471,7 +503,7 @@ rpcreply(PayloadGen) ->
 %% GetVariables, SetVariables, TriggerMessage, GetReport, and
 %% GetBaseReport excluded from the set of possible messages that can
 %% be generated.
-csms_call_reply(unprovisioned, _ConnectionState, _StationState, _Data) ->
+csms_call_reply(unprovisioned, _ConnectionState, _StationState, Data) ->
     [
         {history,
             {call, station201_shim, csms_call, [
@@ -481,6 +513,7 @@ csms_call_reply(unprovisioned, _ConnectionState, _StationState, _Data) ->
             {call, station201_shim, csms_reply, [
                 ?STATIONID, messageid(), ocpp_message_gen:response('2.0.1')
             ]}}
+        | csms_call_timeout(Data)
     ];
 csms_call_reply(booting, connected, StationState, Data) ->
     [
@@ -532,6 +565,7 @@ csms_call_reply(booting, connected, StationState, Data) ->
             {call, station201_shim, csms_call, [
                 ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
             ]}}
+        | csms_call_timeout(Data)
     ];
 csms_call_reply(booting, disconnected, _StationState, Data) ->
     [
@@ -554,8 +588,9 @@ csms_call_reply(booting, disconnected, _StationState, Data) ->
             {call, station201_shim, csms_call, [
                 ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
             ]}}
+        | csms_call_timeout(Data)
     ];
-csms_call_reply(pending, connected, _StationState, #data{csms_cip = undefined}) ->
+csms_call_reply(pending, connected, _StationState, #data{csms_cip = undefined} = Data) ->
     ConfigMessages = [
         ~"SetVariablesRequest",
         ~"GetVariablesRequest",
@@ -581,23 +616,51 @@ csms_call_reply(pending, connected, _StationState, #data{csms_cip = undefined}) 
                             ocpp_message_gen:request('2.0.1'),
                             not lists:member(ocpp_message:type(Message), ConfigMessages)
                         )}
-                ])
+                ]),
+                make_ref()
             ]}}
+        | csms_call_timeout(Data)
     ];
-csms_call_reply(pending, disconnected, _StationState, #data{csms_cip = undefined}) ->
+csms_call_reply(pending, disconnected, _StationState, #data{csms_cip = undefined} = Data) ->
     [
         {history,
             {call, station201_shim, csms_call, [
                 ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
             ]}}
+        | csms_call_timeout(Data)
     ];
-csms_call_reply(pending, _, _StationState, #data{csms_cip = {RPCCall, Ref}}) ->
+csms_call_reply(pending, _, _StationState, #data{csms_cip = {RPCCall, Ref}} = Data) ->
     [
         {history,
             {call, station201_shim, csms_call, [
                 ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
             ]}},
         {history, {call, station201_shim, csms_rpccall_timeout, [?STATIONID, RPCCall, Ref]}}
+        | csms_call_timeout(Data)
+    ].
+
+csms_call_timeout(#data{csms_cip = {RPCCall, TRef}, csms_timedout = TimedOutRPC}) ->
+    %% TODO include a call with an old ref from an answered call, not just a random one
+    [
+        {history,
+            frequency(
+                [
+                    {15,
+                        {call, station201_shim, csms_rpccall_timeout, [?STATIONID, RPCCall, TRef]}},
+                    {1,
+                        {call, station201_shim, csms_rpccall_timeout, [
+                            ?STATIONID, rpccall(ocpp_message_gen:request('2.0.1')), make_ref()
+                        ]}}
+                ]
+            )}
+    ];
+csms_call_timeout(_) ->
+    %% TODO include a call with an old ref, not just a random one
+    [
+        {history,
+            {call, station201_shim, csms_rpccall_timeout, [
+                ?STATIONID, rpccall(ocpp_message_gen:request('2.0.1')), make_ref()
+            ]}}
     ].
 
 %% csms_call_reply(pending, connected, _StationState, Data) ->
@@ -695,25 +758,91 @@ station_call_reply(pending, disconnected, _StationState, _Data) ->
         %% TODO send triggered messages and reports
         {history, ?ARBITRARY_STATION_REPLY}
     ];
-station_call_reply(pending, connected, _StationState, _Data) ->
-    [
+station_call_reply(
+    pending, connected, _StationState, Data = #data{triggers = {Accepted, _Rejected}}
+) ->
+    TriggeredActions = lists:uniq([
+        binary_to_existing_atom(
+            ocpp_message:get(
+                requestedMessage, TriggerRequest
+            )
+        )
+     || TriggerRequest <- Accepted
+    ]),
+    RequestedReports = [RequestID || {_, RequestID} <- Data#data.report_requests],
+    lists:flatten([
         {
             {booting, connected, {up, clean}},
             {call, station201_shim, station_call, [?STATIONID, rpccall(~"BootNotification")]}
         },
         {history,
-            {call, station201_shim, station_call, [
+            {call, station201_shim, station_call_security_error, [
                 ?STATIONID,
                 rpccall(
                     ?SUCHTHAT(
                         Message,
                         ocpp_message_gen:request('2.0.1'),
-                        %% TODO filter for triggered messages and reports
-                        ocpp_message:action(Message) =/= ~"BootNotification"
+                        %% Not a triggered or otherwise allowed message
+                        not lists:member(
+                            ocpp_message:action(Message),
+                            [
+                                ~"BootNotification", ~"NotifiyReport" | TriggeredActions
+                            ]
+                        ) orelse
+                            %% Not a requested report
+                            (ocpp_message:action(Message) =:= ~"NotifyReport" andalso
+                                not lists:member(
+                                    ocpp_message:get(requestId, Message), RequestedReports
+                                ))
                     )
                 )
-            ]}},
-        {history, ?ARBITRARY_STATION_REPLY}
+            ]}}
+        | station_reply(Data)
+    ]).
+
+station_reply(#data{csms_cip = undefined}) ->
+    [{history, ?ARBITRARY_STATION_REPLY}];
+station_reply(#data{csms_cip = {RPCCall, _TimerRef}, csms_timedout = TimedOut}) ->
+    CallAction = ocpp_rpc:action(RPCCall),
+    [
+        {history,
+            frequency([
+                {1, ?ARBITRARY_STATION_REPLY},
+                {10,
+                    {call, station201_shim, station_reply, [
+                        ?STATIONID,
+                        RPCCall,
+                        ocpp_message_gen:message(
+                            '2.0.1', <<CallAction/binary, "Response">>
+                        )
+                    ]}},
+                {4,
+                    {call, station201_shim, station_reply, [
+                        ?STATIONID,
+                        RPCCall,
+                        ?SUCHTHAT(
+                            Message,
+                            ocpp_message_gen:message('2.0.1'),
+                            ocpp_message:action(Message) =/= CallAction
+                        )
+                    ]}}
+                | if
+                    TimedOut =:= undefined ->
+                        [];
+                    true ->
+                        TOAction = ocpp_rpc:action(TimedOut),
+                        [
+                            {10,
+                                {call, station201_shim, station_reply, [
+                                    ?STATIONID,
+                                    TimedOut,
+                                    ocpp_message_gen:message(
+                                        '2.0.1', <<TOAction/binary, "Response">>
+                                    )
+                                ]}}
+                        ]
+                end
+            ])}
     ].
 
 connect_disconnect_power(AppState, connected, StationState) ->
