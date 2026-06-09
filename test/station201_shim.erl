@@ -9,6 +9,7 @@
     station_call/2,
     station_call_before_boot/2,
     station_call_security_error/2,
+    station_call_triggered/2,
     station_call_boot/2,
     station_call_heartbeat/2,
     csms_call/4,
@@ -19,6 +20,9 @@
     csms_reply_boot_rejected/3,
     station_reply/2,
     station_reply/3,
+    station_reply_badaction/3,
+    station_reply_timedout/3,
+    station_reply_badid/3,
     station_reply_report_accepted/3,
     station_reply_report_not_accepted/3,
     station_reply_timedout_call/2,
@@ -47,6 +51,9 @@ station_call_before_boot(StationID, Message) ->
     ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
 
 station_call_security_error(StationID, RPCCall) ->
+    ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
+
+station_call_triggered(StationID, RPCCall) ->
     ocpp_station:rpc(StationID, ocpp_rpc:encode(RPCCall)).
 
 station_call_boot(StationID, RPCCall) ->
@@ -93,6 +100,15 @@ station_reply(StationID, {RPCCall, Payload}) ->
 station_reply(StationID, RPCCall, Payload) ->
     ID = ocpp_rpc:id(RPCCall),
     ocpp_station:rpc(StationID, ocpp_rpc:encode(ocpp_rpc:callresult(Payload, ID))).
+
+station_reply_badaction(StationID, RPCCall, Payload) ->
+    station_reply(StationID, RPCCall, Payload).
+
+station_reply_badid(StationID, RPCCall, Payload) ->
+    station_reply(StationID, RPCCall, Payload).
+
+station_reply_timedout(StationID, RPCCall, Payload) ->
+    station_reply(StationID, RPCCall, Payload).
 
 station_power_cycle() ->
     ok.

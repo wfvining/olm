@@ -195,10 +195,24 @@ precondition(From, From, _Data, {call, _, Fun, [_, RPCCall]}) when
     Fun =:= station_call; Fun =:= station_call_security_error
 ->
     ocpp_rpc:action(RPCCall) =/= ~"BootNotification";
+precondition(
+    {AppState, connected, _} = From,
+    From,
+    #data{triggers = {Accepted, _}},
+    {call, _, station_call_triggered, [_, RPCCall]}
+) when AppState =:= pending; AppState =:= accepted ->
+    %% XXX The condition here needs to be refined to handle specific trigger instances (e.g. evse/connector)
+    lists:member(ocpp_rpc:action(RPCCall), [
+        Action
+     || {Action, _} <- Accepted
+    ]);
 precondition({_, ConnState, _} = From, From, _Data, {call, _, Fun, _}) when
     Fun =:= csms_call;
     Fun =:= csms_reply;
     Fun =:= station_reply;
+    Fun =:= station_reply_badaction;
+    Fun =:= station_reply_badid;
+    Fun =:= station_reply_timedout;
     Fun =:= connect_unsupported;
     Fun =:= connect_supported, ConnState =:= connected
 ->
@@ -207,20 +221,26 @@ precondition(_From, _To, _Data, _Call) ->
     false.
 
 weight({unprovisioned, _, _}, {booting, _, _}, _) ->
-    3;
+    5;
 weight({_, disconnected, _}, {_, connected, _}, _) ->
-    2;
+    20;
 weight({booting, connected, _}, {pending, connected, _}, _) ->
-    3;
+    10;
 weight({booting, connected, _}, {accepted, connected, _}, _) ->
-    2;
+    1;
 weight({pending, connected, _}, _, {call, _, csms_call, _}) ->
-    5;
-weight({pending, connected, _}, _, {call, _, station_call, _}) ->
-    5;
-weight(_, _, {call, _, station_call_security_error, _}) ->
-    5;
+    15;
 weight({pending, connected, _}, _, {call, _, station_reply, _}) ->
+    30;
+weight({pending, connected, _}, _, {call, _, station_call_triggered, _}) ->
+    120;
+weight({pending, connected, _}, _, {call, _, Fun, _}) when
+    Fun =:= connect_supported; Fun =:= connect_unsupported
+->
+    1;
+weight({pending, connected, _}, _, {call, _, station_reply_badid, _}) ->
+    5;
+weight({pending, connected, _}, {pending, connected, _}, _) ->
     15;
 weight(_From, _To, _Call) ->
     1.
@@ -236,8 +256,15 @@ next_state_data(
     _Result,
     {call, _, station_call, [_, RPCCall]}
 ) ->
-    %% TODO save the timer ref (if there is one) so we can send an out of order timeout later
     Data#data{station_cip = RPCCall, csms_cip = undefined};
+next_state_data(
+    From,
+    From,
+    #data{triggers = {Accepted, Rejected}} = Data,
+    _Result,
+    {call, _, station_call_triggered, [_, RPCCall]}
+) ->
+    Data#data{triggers = {remove_trigger(RPCCall, Accepted), Rejected}, station_cip = RPCCall};
 next_state_data(
     {booting, connected, _}, {NextState, connected, _}, Data, _Result, _
 ) when NextState =/= booting ->
@@ -281,18 +308,59 @@ next_state_data(
     _Result,
     {call, _, station_reply, [_, RPCCall, Reply]}
 ) when AppState =:= accepted; AppState =:= pending ->
-    %% RPCCall in cip field and in the args are the same -> same ID.
-    CiPAction = ocpp_rpc:action(RPCCall),
-    ReplyAction = ocpp_message:action(Reply),
-    if
-        ReplyAction =:= CiPAction ->
-            ?debugFmt("cleared csms_cip - ~p ~p", [RPCCall, Reply]),
-            Data#data{csms_cip = undefined, csms_timedout = undefined};
-        ReplyAction =/= CiPAction ->
-            Data
-    end;
+    update_triggers(
+        Data#data{csms_cip = undefined, csms_timedout = undefined}, RPCCall, Reply
+    );
+next_state_data(
+    {_, connected, _} = From, From, Data, _Result, {call, _, station_reply_badaction, _}
+) ->
+    Data#data{csms_cip = undefined};
 next_state_data(_From, _To, Data, _Result, _Call) ->
     Data.
+
+remove_trigger(_, []) ->
+    [];
+remove_trigger(RPCCall, [Trigger | Rest]) ->
+    Action = ocpp_rpc:action(RPCCall),
+    case Trigger of
+        {Action, _} ->
+            Rest;
+        _ ->
+            [Trigger | remove_trigger(RPCCall, Rest)]
+    end.
+
+update_triggers(
+    Data = #data{triggers = {AcceptedTriggers, RejectedTriggers}, report_requests = ReportRequests},
+    RPCCall,
+    Reply
+) ->
+    Call = ocpp_rpc:payload(RPCCall),
+    case ?debugVal(ocpp_rpc:action(RPCCall)) of
+        ~"TriggerMessage" ->
+            Requested = atom_to_binary(ocpp_message:get(requestedMessage, Call)),
+            EVSE = ocpp_message:get(evse, Call, undefined),
+            case ocpp_message:get(status, Reply) of
+                'Accepted' ->
+                    Data#data{
+                        triggers = {[{Requested, EVSE} | AcceptedTriggers], RejectedTriggers}
+                    };
+                'Rejected' ->
+                    Data#data{
+                        triggers = {AcceptedTriggers, [{Requested, EVSE} | RejectedTriggers]}
+                    };
+                _Status ->
+                    Data
+            end;
+        Action when Action =:= ~"GetReport"; Action =:= ~"GetBaseReport" ->
+            case ocpp_message:get(status, Reply) of
+                'Accepted' ->
+                    Data#data{report_requests = [ocpp_rpc:payload(RPCCall) | ReportRequests]};
+                _ ->
+                    Data
+            end;
+        _ ->
+            Data
+    end.
 
 postcondition(_, _, _, {call, _, csms_rpccall_timeout, _}, ok) ->
     true;
@@ -351,10 +419,19 @@ postcondition(
 postcondition(
     {_, disconnected, _} = From, From, _Data, {call, _, Fun, _}, {error, not_connected}
 ) when
-    Fun =:= station_call; Fun =:= station_reply
+    Fun =:= station_call;
+    Fun =:= station_reply;
+    Fun =:= station_reply_badaction;
+    Fun =:= station_reply_badid;
+    Fun =:= station_reply_timedout
 ->
     true;
-postcondition({_, connected, _} = From, From, _Data, {call, _, station_reply, _}, ok) ->
+postcondition({_, connected, _} = From, From, _Data, {call, _, Fun, _}, ok) when
+    Fun =:= station_reply;
+    Fun =:= station_reply_badaction;
+    Fun =:= station_reply_badid;
+    Fun =:= station_reply_timedout
+->
     true;
 postcondition(
     {_, connected, _} = From,
@@ -455,6 +532,10 @@ postcondition_pending(
     From, From, #data{csms_cip = {RPCCall, _}}, {call, _, csms_call, _}, {error, {call_pending, ID}}
 ) ->
     refute_rpcsend() andalso ocpp_rpc:id(RPCCall) =:= ID;
+postcondition_pending(
+    From, From, _Data, {call, _, station_call_triggered, [_, RPCCall]}, ok
+) ->
+    refute_rpcsend();
 postcondition_pending(
     {_, connected, _} = From, From, _Data, {call, _, station_call_security_error, [_, RPCCall]}, ok
 ) ->
@@ -604,10 +685,16 @@ csms_call_reply(pending, connected, _StationState, #data{csms_cip = undefined} =
                 ?STATIONID,
                 messageid(),
                 frequency([
-                    {3,
+                    {100, trigger_message_request()},
+                    {5,
                         ?LET(
                             Message,
-                            oneof(ConfigMessages),
+                            oneof([
+                                ~"SetVariablesRequest",
+                                ~"GetVariablesRequest",
+                                ~"GetReportRequest",
+                                ~"GetBaseReportRequest"
+                            ]),
                             ocpp_message_gen:message('2.0.1', Message)
                         )},
                     {1,
@@ -639,6 +726,56 @@ csms_call_reply(pending, _, _StationState, #data{csms_cip = {RPCCall, Ref}} = Da
         | csms_call_timeout(Data)
     ].
 
+trigger_message_request() ->
+    ?LET(
+        M,
+        oneof([
+            'BootNotification',
+            'LogStatusNotification',
+            'FirmwareStatusNotification',
+            'Heartbeat',
+            'MeterValues',
+            'SignChargingStationCertificate',
+            'SignV2GCertificate',
+            'StatusNotification',
+            'TransactionEvent',
+            'SignCombinedCertificate',
+            'PublishFirmwareStatusNotification'
+        ]),
+        case M of
+            'MeterValues' ->
+                ocpp_message_gen:message(
+                    '2.0.1',
+                    ~"TriggerMessageRequest",
+                    [
+                        {override, #{
+                            requestedMessage => M, evse => ?LET(ID, non_neg_integer(), #{id => ID})
+                        }}
+                    ]
+                );
+            'StatusNotification' ->
+                ocpp_message_gen:message(
+                    '2.0.1',
+                    ~"TriggerMessageRequest",
+                    [
+                        {override, #{
+                            requestedMessage => M,
+                            evse => #{
+                                id => non_neg_integer(),
+                                connectorId => pos_integer()
+                            }
+                        }}
+                    ]
+                );
+            _ ->
+                ocpp_message_gen:message(
+                    '2.0.1',
+                    ~"TriggerMessageRequest",
+                    [{without, [evse]}, {override, #{requestedMessage => M}}]
+                )
+        end
+    ).
+
 csms_call_timeout(#data{csms_cip = {RPCCall, TRef}, csms_timedout = TimedOutRPC}) ->
     %% TODO include a call with an old ref from an answered call, not just a random one
     [
@@ -663,14 +800,9 @@ csms_call_timeout(_) ->
             ]}}
     ].
 
-%% csms_call_reply(pending, connected, _StationState, Data) ->
-%%     %% TODO
-%%     [{history, {call, station201_shim, csms_call, [?STATIONID, messageid(), ocpp_message_gen:request('2.0.1')]}},
-%%      {history, {call, station201_shim, csms_reply, [?STATIONID, messageid(), ocpp_message_gen:response('2.0.1')]}}].
-
 %% A reply that is not associated with any pending call from the CSMS
 -define(ARBITRARY_STATION_REPLY,
-    {call, station201_shim, station_reply, [
+    {call, station201_shim, station_reply_badid, [
         ?STATIONID,
         %% NOTE This term is used only for its message ID, the
         %%      action does not need to match the action in the
@@ -762,43 +894,119 @@ station_call_reply(
     pending, connected, _StationState, Data = #data{triggers = {Accepted, _Rejected}}
 ) ->
     TriggeredActions = lists:uniq([
-        binary_to_existing_atom(
-            ocpp_message:get(
-                requestedMessage, TriggerRequest
-            )
-        )
-     || TriggerRequest <- Accepted
+        TriggeredAction
+     || {TriggeredAction, _} <- Accepted
     ]),
     RequestedReports = [RequestID || {_, RequestID} <- Data#data.report_requests],
-    lists:flatten([
-        {
-            {booting, connected, {up, clean}},
-            {call, station201_shim, station_call, [?STATIONID, rpccall(~"BootNotification")]}
-        },
-        {history,
-            {call, station201_shim, station_call_security_error, [
-                ?STATIONID,
-                rpccall(
-                    ?SUCHTHAT(
-                        Message,
-                        ocpp_message_gen:request('2.0.1'),
-                        %% Not a triggered or otherwise allowed message
-                        not lists:member(
-                            ocpp_message:action(Message),
-                            [
-                                ~"BootNotification", ~"NotifiyReport" | TriggeredActions
-                            ]
-                        ) orelse
-                            %% Not a requested report
-                            (ocpp_message:action(Message) =:= ~"NotifyReport" andalso
-                                not lists:member(
-                                    ocpp_message:get(requestId, Message), RequestedReports
-                                ))
+    station_reply(Data) ++
+        station_call_triggered(Data) ++
+        [
+            {
+                {booting, connected, {up, clean}},
+                {call, station201_shim, station_call, [?STATIONID, rpccall(~"BootNotification")]}
+            },
+            {history,
+                {call, station201_shim, station_call_security_error, [
+                    ?STATIONID,
+                    rpccall(
+                        ?SUCHTHAT(
+                            Message,
+                            ocpp_message_gen:request('2.0.1'),
+                            %% Not a triggered or otherwise allowed message
+                            not lists:member(
+                                ocpp_message:action(Message),
+                                [
+                                    ~"BootNotification", ~"NotifiyReport" | TriggeredActions
+                                ]
+                            ) orelse
+                                %% Not a requested report
+                                (ocpp_message:action(Message) =:= ~"NotifyReport" andalso
+                                    not lists:member(
+                                        ocpp_message:get(requestId, Message), RequestedReports
+                                    ))
+                        )
                     )
+                ]}}
+        ].
+
+station_call_triggered(#data{triggers = {[], _}}) ->
+    %% TODO do a rejected triggered call
+    [];
+station_call_triggered(#data{triggers = {Accepted, _Rejected}}) ->
+    [
+        {history,
+            {call, station201_shim, station_call_triggered, [
+                ?STATIONID,
+                ?LET(
+                    {Action, EVSE},
+                    oneof(Accepted),
+                    begin
+                        Gen =
+                            case Action of
+                                ~"MeterValues" ->
+                                    ocpp_message_gen:message(
+                                        '2.0.1',
+                                        ~"MeterValuesRequest",
+                                        [{override, convert_evse_id_fields(EVSE)}]
+                                    );
+                                ~"StatusNotification" ->
+                                    ocpp_message_gen:message(
+                                        '2.0.1',
+                                        ~"StatusNotificationRequest",
+                                        [{override, convert_evse_id_fields(EVSE)}]
+                                    );
+                                ~"TransactionEvent" when EVSE =/= undefined ->
+                                    ocpp_message_gen:message(
+                                        '2.0.1',
+                                        ~"TransactionEventRequest",
+                                        [{override, #{evse => EVSE}}]
+                                    );
+                                ~"TransactionEvent" when EVSE =:= undefined ->
+                                    ocpp_message_gen:message(
+                                        '2.0.1',
+                                        ~"TransactionEventRequest",
+                                        [{without, [evse]}]
+                                    );
+                                ~"SignChargingStationCertificate" ->
+                                    ocpp_message_gen:message(
+                                        '2.0.1',
+                                        ~"SignCertificateRequest",
+                                        [
+                                            {override, #{
+                                                certificateType => 'ChargingStationCertificate'
+                                            }}
+                                        ]
+                                    );
+                                ~"SignV2GCertificate" ->
+                                    ocpp_message_gen:message(
+                                        '2.0.1',
+                                        ~"SignCertificateRequest",
+                                        [{override, #{certificateType => 'V2GCertificate'}}]
+                                    );
+                                ~"SignCombinedCertificate" ->
+                                    ocpp_message_gen:message(
+                                        '2.0.1',
+                                        ~"SignCertificateRequest",
+                                        [{without, [certificateType]}]
+                                    );
+                                _ ->
+                                    ocpp_message_gen:message('2.0.1', Action)
+                            end,
+                        rpccall(Gen)
+                    end
                 )
             ]}}
-        | station_reply(Data)
-    ]).
+    ].
+
+convert_evse_id_fields(EVSE) ->
+    maps:fold(
+        fun
+            (id, V, Acc) -> Acc#{evseId => V};
+            (K, V, Acc) -> Acc#{K => V}
+        end,
+        #{},
+        EVSE
+    ).
 
 station_reply(#data{csms_cip = undefined}) ->
     [{history, ?ARBITRARY_STATION_REPLY}];
@@ -806,44 +1014,63 @@ station_reply(#data{csms_cip = {RPCCall, _TimerRef}, csms_timedout = TimedOut}) 
     CallAction = ocpp_rpc:action(RPCCall),
     [
         {history,
-            frequency([
-                {1, ?ARBITRARY_STATION_REPLY},
-                {10,
-                    {call, station201_shim, station_reply, [
-                        ?STATIONID,
-                        RPCCall,
-                        ocpp_message_gen:message(
-                            '2.0.1', <<CallAction/binary, "Response">>
-                        )
-                    ]}},
-                {4,
-                    {call, station201_shim, station_reply, [
-                        ?STATIONID,
-                        RPCCall,
-                        ?SUCHTHAT(
-                            Message,
-                            ocpp_message_gen:message('2.0.1'),
-                            ocpp_message:action(Message) =/= CallAction
-                        )
-                    ]}}
-                | if
-                    TimedOut =:= undefined ->
-                        [];
-                    true ->
-                        TOAction = ocpp_rpc:action(TimedOut),
-                        [
-                            {10,
-                                {call, station201_shim, station_reply, [
-                                    ?STATIONID,
-                                    TimedOut,
-                                    ocpp_message_gen:message(
-                                        '2.0.1', <<TOAction/binary, "Response">>
-                                    )
-                                ]}}
-                        ]
-                end
-            ])}
+            {call, station201_shim, station_reply, [
+                ?STATIONID,
+                RPCCall,
+                response(CallAction)
+            ]}},
+        {history, ?ARBITRARY_STATION_REPLY},
+        {history,
+            {call, station201_shim, station_reply_badaction, [
+                ?STATIONID,
+                RPCCall,
+                ?SUCHTHAT(
+                    Message,
+                    ocpp_message_gen:response('2.0.1'),
+                    ocpp_message:action(Message) =/= CallAction andalso
+                        %% filter out other message instances that can succesfully decode as a CallAction
+                        case
+                            ocpp_rpc:decode(
+                                '2.0.1',
+                                ocpp_rpc:encode(ocpp_rpc:callresult(Message, ocpp_rpc:id(RPCCall))),
+                                [{expected, CallAction}]
+                            )
+                        of
+                            {ok, {callresult, _}} -> false;
+                            _ -> true
+                        end
+                )
+            ]}}
+        | if
+            TimedOut =:= undefined ->
+                [];
+            true ->
+                TOAction = ocpp_rpc:action(TimedOut),
+                [
+                    {history,
+                        {call, station201_shim, station_reply_timedout, [
+                            ?STATIONID,
+                            TimedOut,
+                            ocpp_message_gen:message(
+                                '2.0.1', <<TOAction/binary, "Response">>
+                            )
+                        ]}}
+                ]
+        end
     ].
+
+response(~"TriggerMessage") ->
+    ?LET(
+        Status,
+        frequency([{20, 'Accepted'}, {1, 'Rejected'}, {1, 'NotImplemented'}]),
+        ocpp_message_gen:message(
+            '2.0.1', ~"TriggerMessageResponse", [{override, #{status => Status}}]
+        )
+    );
+response(CallAction) ->
+    ocpp_message_gen:message(
+        '2.0.1', <<CallAction/binary, "Response">>
+    ).
 
 connect_disconnect_power(AppState, connected, StationState) ->
     [
