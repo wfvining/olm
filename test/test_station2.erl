@@ -39,6 +39,28 @@ end).
         end}
 ).
 
+-define(CSR,
+    ~"""
+    -----BEGIN CERTIFICATE REQUEST-----
+    MIICzDCCAbQCAQAwgYYxCzAJBgNVBAYTAkVOMQ0wCwYDVQQIDARub25lMQ0wCwYD
+    VQQHDARub25lMRIwEAYDVQQKDAlXaWtpcGVkaWExDTALBgNVBAsMBG5vbmUxGDAW
+    BgNVBAMMDyoud2lraXBlZGlhLm9yZzEcMBoGCSqGSIb3DQEJARYNbm9uZUBub25l
+    LmNvbTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAMP/U8RlcCD6E8AL
+    PT8LLUR9ygyygPCaSmIEC8zXGJung3ykElXFRz/Jc/bu0hxCxi2YDz5IjxBBOpB/
+    kieG83HsSmZZtR+drZIQ6vOsr/ucvpnB9z4XzKuabNGZ5ZiTSQ9L7Mx8FzvUTq5y
+    /ArIuM+FBeuno/IV8zvwAe/VRa8i0QjFXT9vBBp35aeatdnJ2ds50yKCsHHcjvtr
+    9/8zPVqqmhl2XFS3Qdqlsprzbgksom67OobJGjaV+fNHNQ0o/rzP//Pl3i7vvaEG
+    7Ff8tQhEwR9nJUR1T6Z7ln7S6cOr23YozgWVkEJ/dSr6LAopb+cZ88FzW5NszU6i
+    57HhA7ECAwEAAaAAMA0GCSqGSIb3DQEBBAUAA4IBAQBn8OCVOIx+n0AS6WbEmYDR
+    SspR9xOCoOwYfamB+2Bpmt82R01zJ/kaqzUtZUjaGvQvAaz5lUwoMdaO0X7I5Xfl
+    sllMFDaYoGD4Rru4s8gz2qG/QHWA8uPXzJVAj6X0olbIdLTEqTKsnBj4Zr1AJCNy
+    /YcG4ouLJr140o26MhwBpoCRpPjAgdYMH60BYfnc4/DILxMVqR9xqK1s98d6Ob/+
+    3wHFK+S7BRWrJQXcM8veAexXuk9lHQ+FgGfD0eSYGz0kyP26Qa2pLTwumjt+nBPl
+    rfJxaLHwTQ/1988G0H35ED0f9Md5fzoKi5evU1wG5WRxdEUPyt3QUXxdQ69i0C+7
+    -----END CERTIFICATE REQUEST-----
+    """
+).
+
 -define(STALE_TIMEOUT, 2000).
 
 stale_timeout_test_() ->
@@ -355,7 +377,8 @@ boot_pending_trigger_message_test_() ->
         boot_pending_untriggered(),
         boot_pending_triggered_racing(),
         boot_pending_triggered_rejected(),
-        boot_pending_triggered_accepted()
+        boot_pending_triggered_accepted(),
+        boot_pending_trigger_callresulterror()
     ]}.
 
 boot_pending_untriggered() ->
@@ -411,6 +434,87 @@ boot_pending_untriggered(Conn, StationID, Version) ->
             ?assertEqual(ID, ocpp_rpc:id(CallError)),
             ?assertEqual('SecurityError', ocpp_rpc:error_code(CallError))
     end.
+
+boot_pending_trigger_callresulterror() ->
+    ?withStation(
+        ?withClient(
+            [
+                fun({Client, StationID}) ->
+                    ?withConnection(
+                        Client,
+                        ConnHandle,
+                        ['2.0.1'],
+                        "CSMS can send second TriggerMessageRequest "
+                        "after station sends CALLRESULT with the wrong payload",
+                        begin
+                            dbg:tracer(),
+                            dbg:p(all, c),
+                            dbg:tp(ocpp_station, cx),
+                            dbg:tp(ocpp_rpc, decode, cx),
+                            ocpp_test_client:boot_to(ConnHandle, pending),
+                            {ok, TriggerMessage1} = ocpp_message:new(
+                                '2.0.1', ~"TriggerMessageRequest", #{
+                                    requestedMessage => 'SignCombinedCertificate'
+                                }
+                            ),
+                            {ok, BadReply} = ocpp_message:new(
+                                '2.0.1', ~"ClearDisplayMessageRequest", #{
+                                    id => 16
+                                }
+                            ),
+                            {ok, TriggerMessage2} = ocpp_message:new(
+                                '2.0.1', ~"TriggerMessageRequest", #{
+                                    requestedMessage => 'Heartbeat'
+                                }
+                            ),
+                            ?assertEqual(ok, ocpp_station:call(StationID, ~"tm1", TriggerMessage1)),
+                            Call1 = ocpp_test_client:do(ConnHandle, fun() ->
+                                ocpp_test_client:recv(1000)
+                            end),
+                            ?assertEqual(
+                                {ok, {call, ocpp_rpc:call(TriggerMessage1, ~"tm1")}},
+                                ocpp_rpc:decode('2.0.1', Call1, [])
+                            ),
+                            Reply = ocpp_rpc:callresult(BadReply, ~"tm1"),
+                            ocpp_test_client:do(
+                                ConnHandle,
+                                fun() ->
+                                    ok = ocpp_station:rpc(StationID, ocpp_rpc:encode(Reply))
+                                end
+                            ),
+                            {ok, SignRequest} = ocpp_message:new(
+                                '2.0.1',
+                                ~"SignCertificateRequest",
+                                #{csr => ?CSR}
+                            ),
+                            SignRPC = ocpp_rpc:call(SignRequest, ~"csr"),
+                            Result = ocpp_test_client:do(
+                                ConnHandle,
+                                fun() ->
+                                    ocpp_station:rpc(StationID, ocpp_rpc:encode(SignRPC)),
+                                    ocpp_test_client:recv(1000)
+                                end
+                            ),
+                            ?assertMatch(
+                                {ok, {callerror, _Error}}, ocpp_rpc:decode('2.0.1', Result, [])
+                            ),
+                            {ok, {callerror, Error}} = ocpp_rpc:decode('2.0.1', Result, []),
+                            ?assertEqual('SecurityError', ocpp_rpc:error_code(Error)),
+                            ?assertEqual(~"csr", ocpp_rpc:id(Error)),
+                            ?assertEqual(ok, ocpp_station:call(StationID, ~"tm2", TriggerMessage2)),
+                            Call2 = ocpp_test_client:do(ConnHandle, fun() ->
+                                ocpp_test_client:recv(1000)
+                            end),
+                            ?assertEqual(
+                                {ok, {call, ocpp_rpc:call(TriggerMessage2, ~"tm2")}},
+                                ocpp_rpc:decode('2.0.1', Call2, [])
+                            )
+                        end
+                    )
+                end
+            ]
+        )
+    ).
 
 boot_pending_triggered_racing() ->
     [

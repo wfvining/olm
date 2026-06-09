@@ -425,10 +425,21 @@ boot_pending({call, From}, {rpc, Pid, RPCBinary}, State) ->
             %% TODO this comes from decoding an invalid response - log, send error
             %%      reply, clear call in progress
             {keep_state_and_data, [{reply, From, ok}]};
-        {error, {error, _}} ->
-            %% TODO a decoding error occurred that does not map to a sendable error -
-            %%      message log the error & drop the message
-            {keep_state_and_data, [{reply, From, ok}]}
+        {error, {error, Error}} ->
+            maybe
+                {ID, _, PendingCall, TRef} ?= State#state.pending_call,
+                callresulterror ?= ocpp_rpc:error_type(Error),
+                ID ?= ocpp_rpc:id(Error),
+                logger:warning(
+                    "received invalid response for CALL ~p\nPending = ~p\nError = ~p",
+                    [ID, PendingCall, Error]
+                ),
+                ocpp_timer:cancel(TRef),
+                {keep_state, State#state{pending_call = undefined}, [{reply, From, ok}]}
+            else
+                _ ->
+                    {keep_state_and_data, [{reply, From, ok}]}
+            end
     end;
 boot_pending({call, From}, {send, {call, MessageID, Message}}, State) ->
     RPC = ocpp_rpc:call(Message, MessageID),
@@ -737,7 +748,7 @@ handle_callresult(RPC, From, #state{pending_call = undefined}) ->
 handle_callresult(RPC, From, #state{pending_call = {PendingID, _, _PendingCall, TRef}} = State) ->
     Message = ocpp_rpc:payload(RPC),
     case ocpp_rpc:id(RPC) of
-        ID when ID =:= PendingID ->
+        PendingID ->
             ocpp_timer:cancel(TRef),
             process_callresult(Message, From, State);
         ID when ID =/= PendingID ->
@@ -750,9 +761,10 @@ handle_callresult(RPC, From, #state{pending_call = {PendingID, _, _PendingCall, 
             ]}
     end.
 
-process_callresult(Message, From, #state{pending_call = {_, _, PendingCall, _}} = State) ->
-    case ocpp_message:type(Message) of
-        ~"TriggerMessageResponse" ->
+process_callresult(Message, From, #state{pending_call = {ID, _, PendingCall, _}} = State) ->
+    PendingAction = ocpp_message:action(PendingCall),
+    case ocpp_message:action(Message) of
+        PendingAction = ~"TriggerMessage" ->
             {keep_state,
                 State#state{
                     pending_call = undefined,
@@ -760,8 +772,15 @@ process_callresult(Message, From, #state{pending_call = {_, _, PendingCall, _}} 
                 },
                 [{reply, From, ok}]};
         %% TODO special handling for Report and Get/Set Variables messages
-        _ ->
+        PendingAction ->
             %% TODO dispatch to handler
+            {keep_state, State#state{pending_call = undefined}, [{reply, From, ok}]};
+        Action ->
+            logger:error(
+                "Got response for message ~p; however, action (~p) does not match pending call (~p)",
+                [ID, Action, PendingAction]
+            ),
+            %% TODO dispatch to handler to inform about the error - response is dropped
             {keep_state, State#state{pending_call = undefined}, [{reply, From, ok}]}
     end.
 
