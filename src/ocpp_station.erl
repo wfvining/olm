@@ -473,11 +473,20 @@ boot_pending({call, From}, {send, {call, MessageID, Message}}, State) ->
 boot_pending(
     {call, From}, {send, {callresult, MessageID, Message}}, #state{rpc_call = PendingCall} = State
 ) ->
+    PendingAction = ocpp_rpc:action(PendingCall),
+    ReplyAction = ocpp_message:action(Message),
     case ocpp_rpc:id(PendingCall) of
-        MessageID ->
+        MessageID when PendingAction =:= ReplyAction ->
             RPC = ocpp_rpc:callresult(Message, MessageID),
             rpcsend(State#state.connection, RPC),
             {keep_state, State#state{rpc_call = undefined}, [{reply, From, ok}]};
+        MessageID ->
+            logger:error(
+                "Request to send CALLRESULT for message ~p with action ~p, "
+                "but CALLRESULT action is ~p",
+                [MessageID, PendingAction, ReplyAction]
+            ),
+            {keep_state_and_data, [{reply, From, {error, badaction}}]};
         PendingID ->
             logger:info(
                 "Request to send CALLRESULT for message ID = ~p, but message ID ~p is pending.~n"
@@ -556,17 +565,24 @@ accepted(
     PendingAction = ocpp_message:action(ocpp_rpc:payload(PendingCall)),
     ResultAction = ocpp_message:action(Message),
     case ocpp_rpc:id(PendingCall) of
-        MessageID ->
+        MessageID when PendingAction =:= ResultAction ->
             CallResult = ocpp_rpc:callresult(Message, MessageID),
             rpcsend(State#state.connection, CallResult),
             {keep_state, State#state{rpc_call = undefined}, [{reply, From, ok}]};
+        MessageID ->
+            logger:error(
+                "Request to send CALLRESULT for message ~p with action ~p, "
+                "but CALLRESULT action is ~p",
+                [MessageID, PendingAction, ResultAction]
+            ),
+            {keep_state_and_data, [{reply, From, {error, badaction}}]};
         PendingID ->
             logger:warning(
                 "Got ~sResponse with ID = ~p, but waiting for ~sResponse with ID ~p~nMessage dropped.",
                 [ResultAction, MessageID, PendingAction, PendingID]
             ),
             {keep_state_and_data, [
-                {reply, From, {error, message_dropped}}
+                {reply, From, {error, {call_not_pending, MessageID}}}
             ]}
     end;
 accepted({call, From}, {send, {call, MessageID, Message}}, State) ->

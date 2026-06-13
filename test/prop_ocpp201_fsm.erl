@@ -164,7 +164,8 @@ precondition(
     #data{station_cip = CiP},
     {call, _, csms_reply, [_, MessageID, Payload]}
 ) when
-    NextState =/= booting
+    NextState =/= booting,
+    CiP =/= undefined
 ->
     %% all other csms_reply calls in `booting` do not change the state (covered below)
     Status = ocpp_message:get(status, Payload, undefined),
@@ -206,6 +207,14 @@ precondition(
         Action
      || {Action, _} <- Accepted
     ]);
+precondition({_, connected, _} = From, From, Data, {call, _, csms_reply_badid, [_, MessageID, _]}) ->
+    Data#data.station_cip =:= undefined orelse ocpp_rpc:id(Data#data.station_cip) =/= MessageID;
+precondition(
+    {_, connected, _} = From, From, Data, {call, _, csms_reply_badaction, [_, MessageID, Payload]}
+) ->
+    Action = ocpp_message:action(Payload),
+    Data#data.station_cip =/= unedfined andalso ocpp_rpc:action(Data#data.station_cip) =/= Action andalso
+        ocpp_rpc:id(Data#data.station_cip) =:= MessageID;
 precondition({_, ConnState, _} = From, From, _Data, {call, _, Fun, _}) when
     Fun =:= csms_call;
     Fun =:= csms_reply;
@@ -234,6 +243,12 @@ weight({pending, connected, _}, _, {call, _, station_reply, _}) ->
     30;
 weight({pending, connected, _}, _, {call, _, station_call_triggered, _}) ->
     120;
+weight({pending, connected, _}, _, {call, _, csms_reply, _}) ->
+    60;
+weight({pending, connected, _}, _, {call, _, Fun, _}) when
+    Fun =:= csms_reply_badid; Fun =:= csms_reply_badaction
+->
+    30;
 weight({pending, connected, _}, _, {call, _, Fun, _}) when
     Fun =:= connect_supported; Fun =:= connect_unsupported
 ->
@@ -315,6 +330,23 @@ next_state_data(
     {_, connected, _} = From, From, Data, _Result, {call, _, station_reply_badaction, _}
 ) ->
     Data#data{csms_cip = undefined};
+next_state_data(
+    {pending, connected, _} = From,
+    From,
+    Data = #data{station_cip = CiP},
+    _Result,
+    {call, _, csms_reply, [_, MessageID, Message]}
+) when CiP =/= undefined ->
+    PendingID = ocpp_rpc:id(CiP),
+    PendingAction = ocpp_rpc:action(CiP),
+    ResponseAction = ocpp_message:action(Message),
+    if
+        PendingID =:= MessageID,
+        PendingAction =:= ResponseAction ->
+            Data#data{station_cip = undefined};
+        true ->
+            Data
+    end;
 next_state_data(_From, _To, Data, _Result, _Call) ->
     Data.
 
@@ -540,6 +572,32 @@ postcondition_pending(
     {_, connected, _} = From, From, _Data, {call, _, station_call_security_error, [_, RPCCall]}, ok
 ) ->
     assert_callerror(RPCCall, 'SecurityError');
+postcondition_pending(
+    {_, connected, _} = From,
+    From,
+    Data,
+    {call, _, csms_reply, [_, MessageID, Message]},
+    ok
+) ->
+    ocpp_rpc:id(Data#data.station_cip) =:= MessageID andalso
+        ocpp_message:action(Message) =:= ocpp_rpc:action(Data#data.station_cip) andalso
+        assert_callresult(Data#data.station_cip);
+postcondition_pending(
+    {_, connected, _} = From,
+    From,
+    _Data,
+    {call, _, csms_reply_badid, [_, MessageID, _]},
+    {error, {call_not_pending, MessageID}}
+) ->
+    refute_rpcsend();
+postcondition_pending(
+    {_, connected, _} = From,
+    From,
+    _Data,
+    {call, _, csms_reply_badaction, _},
+    {error, badaction}
+) ->
+    refute_rpcsend();
 postcondition_pending(_From, _To, _Data, _Call, _Result) ->
     false.
 
@@ -679,35 +737,36 @@ csms_call_reply(pending, connected, _StationState, #data{csms_cip = undefined} =
         ~"GetBaseReportRequest",
         ~"TriggerMessageRequest"
     ],
-    [
-        {history,
-            {call, station201_shim, csms_call, [
-                ?STATIONID,
-                messageid(),
-                frequency([
-                    {100, trigger_message_request()},
-                    {5,
-                        ?LET(
-                            Message,
-                            oneof([
-                                ~"SetVariablesRequest",
-                                ~"GetVariablesRequest",
-                                ~"GetReportRequest",
-                                ~"GetBaseReportRequest"
-                            ]),
-                            ocpp_message_gen:message('2.0.1', Message)
-                        )},
-                    {1,
-                        ?SUCHTHAT(
-                            Message,
-                            ocpp_message_gen:request('2.0.1'),
-                            not lists:member(ocpp_message:type(Message), ConfigMessages)
-                        )}
-                ]),
-                make_ref()
-            ]}}
-        | csms_call_timeout(Data)
-    ];
+    csms_reply(Data) ++
+        [
+            {history,
+                {call, station201_shim, csms_call, [
+                    ?STATIONID,
+                    messageid(),
+                    frequency([
+                        {100, trigger_message_request()},
+                        {5,
+                            ?LET(
+                                Message,
+                                oneof([
+                                    ~"SetVariablesRequest",
+                                    ~"GetVariablesRequest",
+                                    ~"GetReportRequest",
+                                    ~"GetBaseReportRequest"
+                                ]),
+                                ocpp_message_gen:message('2.0.1', Message)
+                            )},
+                        {1,
+                            ?SUCHTHAT(
+                                Message,
+                                ocpp_message_gen:request('2.0.1'),
+                                not lists:member(ocpp_message:type(Message), ConfigMessages)
+                            )}
+                    ]),
+                    make_ref()
+                ]}}
+            | csms_call_timeout(Data)
+        ];
 csms_call_reply(pending, disconnected, _StationState, #data{csms_cip = undefined} = Data) ->
     [
         {history,
@@ -724,6 +783,45 @@ csms_call_reply(pending, _, _StationState, #data{csms_cip = {RPCCall, Ref}} = Da
             ]}},
         {history, {call, station201_shim, csms_rpccall_timeout, [?STATIONID, RPCCall, Ref]}}
         | csms_call_timeout(Data)
+    ].
+
+csms_reply(#data{station_cip = undefined} = Data) ->
+    csms_badreply(Data);
+csms_reply(#data{station_cip = CiP} = Data) ->
+    Action = ocpp_rpc:action(CiP),
+    [
+        {history,
+            {call, station201_shim, csms_reply, [
+                ?STATIONID,
+                ocpp_rpc:id(CiP),
+                ocpp_message_gen:message('2.0.1', <<Action/binary, "Response">>)
+            ]}}
+        | csms_badreply(Data)
+    ].
+
+csms_badreply(#data{station_cip = undefined}) ->
+    [
+        {history,
+            {call, station201_shim, csms_reply_badid, [
+                ?STATIONID, messageid(), ocpp_message_gen:response('2.0.1')
+            ]}}
+    ];
+csms_badreply(#data{station_cip = CiP}) ->
+    [
+        {history,
+            {call, station201_shim, csms_reply_badid, [
+                ?STATIONID, messageid(), ocpp_message_gen:response('2.0.1')
+            ]}},
+        {history,
+            {call, station201_shim, csms_reply_badaction, [
+                ?STATIONID,
+                ocpp_rpc:id(CiP),
+                ?SUCHTHAT(
+                    Message,
+                    ocpp_message_gen:response('2.0.1'),
+                    ocpp_message:action(Message) =/= ocpp_rpc:action(CiP)
+                )
+            ]}}
     ].
 
 trigger_message_request() ->

@@ -15,6 +15,8 @@
     csms_call/4,
     csms_rpccall_timeout/3,
     csms_reply/3,
+    csms_reply_badaction/3,
+    csms_reply_badid/3,
     csms_reply_boot_accepted/3,
     csms_reply_boot_pending/3,
     csms_reply_boot_rejected/3,
@@ -71,6 +73,12 @@ csms_rpccall_timeout(StationID, RPCCall, TimerRef) ->
     ok.
 
 csms_reply(StationID, MessageID, Payload) ->
+    ocpp_station:reply(StationID, MessageID, Payload).
+
+csms_reply_badid(StationID, MessageID, Payload) ->
+    ocpp_station:reply(StationID, MessageID, Payload).
+
+csms_reply_badaction(StationID, MessageID, Payload) ->
     ocpp_station:reply(StationID, MessageID, Payload).
 
 csms_reply_boot_accepted(StationID, RPCCall, Reply) ->
