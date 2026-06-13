@@ -447,10 +447,6 @@ boot_pending_trigger_callresulterror() ->
                         "CSMS can send second TriggerMessageRequest "
                         "after station sends CALLRESULT with the wrong payload",
                         begin
-                            dbg:tracer(),
-                            dbg:p(all, c),
-                            dbg:tp(ocpp_station, cx),
-                            dbg:tp(ocpp_rpc, decode, cx),
                             ocpp_test_client:boot_to(ConnHandle, pending),
                             {ok, TriggerMessage1} = ocpp_message:new(
                                 '2.0.1', ~"TriggerMessageRequest", #{
@@ -868,7 +864,147 @@ boot_pending_multiple_triggers_allowed() ->
 %% TODO bad_callresult_payload_test_()
 %% TODO bad_callresult_message_id_test_()
 
+csms_reply_twice_test_() ->
+    {setup, fun mock_station_manager/0, fun teardown_station_manager/1, [
+        reply_twice(pending),
+        reply_twice(accepted),
+        [reply_twice_booting(Status) || Status <- ['Accepted', 'Pending', 'Rejected']]
+    ]}.
+
+reply_twice_booting(Status) ->
+    [
+        ?withStation(
+            ?withClient(
+                [
+                    fun({Client, StationID}) ->
+                        ?withConnection(
+                            Client,
+                            ConnHandle,
+                            [Version],
+                            "(" ++ atom_to_list(Version) ++ ":booting:" ++ atom_to_list(Status) ++
+                                ") " ++
+                                "replying twice to the same BootNotificationRequest fails",
+                            begin
+                                BR = ocpp_test_client:make_boot_notification_request(Version, []),
+                                BootRequest = ocpp_rpc:call(BR, ~"BR"),
+                                ocpp_test_client:do(
+                                    ConnHandle,
+                                    fun() ->
+                                        ocpp_station:rpc(StationID, ocpp_rpc:encode(BootRequest))
+                                    end
+                                ),
+                                {ok, BResp} = ocpp_message:new(
+                                    Version, ~"BootNotificationResponse", #{
+                                        status => Status,
+                                        currentTime => {{2026, 01, 01}, {01, 02, 03}},
+                                        interval => 0
+                                    }
+                                ),
+                                ok = ocpp_station:reply(StationID, ~"BR", BResp),
+                                Res = ocpp_test_client:do(ConnHandle, fun() ->
+                                    ocpp_test_client:recv(100)
+                                end),
+                                ?assertMatch(
+                                    {ok, {callresult, _}},
+                                    ocpp_rpc:decode(Version, Res, [{expected, ~"BootNotification"}])
+                                ),
+                                if
+                                    Status =:= 'Accepted'; Status =:= 'Pending' ->
+                                        ?assertEqual(
+                                            {error, {call_not_pending, ~"BR"}},
+                                            ocpp_station:reply(StationID, ~"BR", BResp)
+                                        );
+                                    Status =:= 'Rejected' ->
+                                        ?assertEqual(
+                                            {error, not_provisioned},
+                                            ocpp_station:reply(StationID, ~"BR", BResp)
+                                        )
+                                end,
+                                ?assertError(
+                                    client_recv_timeout,
+                                    ocpp_test_client:do(ConnHandle, fun() ->
+                                        ocpp_test_client:recv(50)
+                                    end)
+                                )
+                            end
+                        )
+                    end
+                ]
+            )
+        )
+     || Version <- ['1.6', '2.0.1', '2.1']
+    ].
+
+reply_twice(State) ->
+    [
+        ?withStation(
+            ?withClient(
+                [
+                    fun({Client, StationID}) ->
+                        ?withConnection(
+                            Client,
+                            ConnHandle,
+                            [Version],
+                            "(" ++ atom_to_list(Version) ++ ":" ++ atom_to_list(State) ++ ") " ++
+                                "replying twice to the same station-initiated RPC fails with " ++
+                                "{error, {call_not_pending, _}}",
+                            begin
+                                ocpp_test_client:boot_to(ConnHandle, State),
+                                do_reply_twice(Version, State, ConnHandle, StationID)
+                            end
+                        )
+                    end
+                ]
+            )
+        )
+     || Version <- ['1.6', '2.0.1', '2.1']
+    ].
+
 %%% test functions
+
+do_reply_twice(Version, pending, ConnHandle, StationID) ->
+    %% TriggerRequest, TriggerResponse(accepted), Call, reply, reply
+    {TMReq, TMResp} = trigger_message_request(Version, ~"Heartbeat", 'Accepted'),
+    ocpp_station:call(StationID, ~"TMR", TMReq),
+    Res = ocpp_test_client:do(ConnHandle, fun() -> ocpp_test_client:recv(100) end),
+    ?assertMatch({ok, {call, _}}, ocpp_rpc:decode(Version, Res, [])),
+    TMResponse = ocpp_rpc:callresult(TMResp, ~"TMR"),
+    {ok, HBReq} = ocpp_message:new(Version, ~"HeartbeatRequest", #{}),
+    {ok, HBResp} = ocpp_message:new(Version, ~"HeartbeatResponse", #{
+        currentTime => {{2026, 1, 1}, {20, 21, 22}}
+    }),
+    ok = ocpp_test_client:do(
+        ConnHandle,
+        fun() ->
+            ocpp_station:rpc(StationID, ocpp_rpc:encode(TMResponse)),
+            ocpp_station:rpc(StationID, ocpp_rpc:encode(ocpp_rpc:call(HBReq, ~"HB")))
+        end
+    ),
+    ok = ocpp_station:reply(StationID, ~"HB", HBResp),
+    Res2 = ocpp_test_client:do(ConnHandle, fun() -> ocpp_test_client:recv(100) end),
+    ?assertMatch({ok, {callresult, _}}, ocpp_rpc:decode(Version, Res2, [{expected, ~"Heartbeat"}])),
+    ?assertEqual({error, {call_not_pending, ~"HB"}}, ocpp_station:reply(StationID, ~"HB", HBResp)),
+    ?assertError(
+        client_recv_timeout, ocpp_test_client:do(ConnHandle, fun() -> ocpp_test_client:recv(50) end)
+    );
+do_reply_twice(Version, accepted, ConnHandle, StationID) ->
+    {ok, HBReq} = ocpp_message:new(Version, ~"HeartbeatRequest", #{}),
+    {ok, HBResp} = ocpp_message:new(Version, ~"HeartbeatResponse", #{
+        currentTime => {{2026, 1, 1}, {20, 21, 22}}
+    }),
+    ok = ocpp_test_client:do(
+        ConnHandle,
+        fun() ->
+            ocpp_station:rpc(StationID, ocpp_rpc:encode(ocpp_rpc:call(HBReq, ~"HB")))
+        end
+    ),
+    ok = ocpp_station:reply(StationID, ~"HB", HBResp),
+    Res2 = ocpp_test_client:do(ConnHandle, fun() -> ocpp_test_client:recv(100) end),
+    ?assertMatch({ok, {callresult, _}}, ocpp_rpc:decode(Version, Res2, [{expected, ~"Heartbeat"}])),
+    ?assertEqual({error, {call_not_pending, ~"HB"}}, ocpp_station:reply(StationID, ~"HB", HBResp)),
+    ?assertError(
+        client_recv_timeout, ocpp_test_client:do(ConnHandle, fun() -> ocpp_test_client:recv(50) end)
+    ).
 
 connect_invalid_station(_StationID) ->
     {"connecting to a station ID that does not exist fails", [

@@ -470,6 +470,8 @@ boot_pending({call, From}, {send, {call, MessageID, Message}}, State) ->
                 {reply, From, {error, {call_pending, element(1, State#state.pending_call)}}}
             ]}
     end;
+boot_pending({call, From}, {send, {callresult, MessageID, _}}, #state{rpc_call = undefined}) ->
+    {keep_state_and_data, [{reply, From, {error, {call_not_pending, MessageID}}}]};
 boot_pending(
     {call, From}, {send, {callresult, MessageID, Message}}, #state{rpc_call = PendingCall} = State
 ) ->
@@ -559,6 +561,9 @@ accepted({call, From}, {rpc, Pid, RPCBinary}, State) ->
         {error, {error, _}} ->
             {keep_state_and_data, [{reply, From, ok}]}
     end;
+accepted({call, From}, {send, {callresult, MessageID, _}}, #state{rpc_call = undefined}) ->
+    logger:warning("cannot send CALLRESULT for ~p. No CALL is pending.", [MessageID]),
+    {keep_state_and_data, [{reply, From, {error, {call_not_pending, MessageID}}}]};
 accepted(
     {call, From}, {send, {callresult, MessageID, Message}}, #state{rpc_call = PendingCall} = State
 ) ->
