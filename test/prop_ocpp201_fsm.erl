@@ -126,8 +126,6 @@ pending(disconnected, StationState, Data) ->
 
 accepted(connected, StationState, Data) ->
     connect_disconnect_power(?FUNCTION_NAME, connected, StationState);
-%% csms_call_reply(accepted, ConnectionState, StationState, Data) ++
-%%     station_call_reply(accepted, ConnectionState, StationState, Data) ++
 
 accepted(disconnected, StationState, Data) ->
     connect_disconnect_power(?FUNCTION_NAME, disconnected, StationState).
@@ -148,7 +146,7 @@ precondition(
     {_, disconnected, _},
     {_, disconnected, _},
     _Data,
-    {call, _, station_power_cycle}
+    {call, _, station_power_cycle, _}
 ) ->
     true;
 precondition(
@@ -192,12 +190,12 @@ precondition(
 ) ->
     %% any message other than a BootNotification MUST change the state to unprovisioned
     ocpp_rpc:action(RPCCall) =/= ~"BootNotification";
-precondition(From, From, _Data, {call, _, Fun, [_, RPCCall]}) when
+precondition({_, Conn, _} = From, From, _Data, {call, _, Fun, [_, RPCCall]}) when
     Fun =:= station_call; Fun =:= station_call_security_error
 ->
-    ocpp_rpc:action(RPCCall) =/= ~"BootNotification";
+    ocpp_rpc:action(RPCCall) =/= ~"BootNotification" orelse Conn =:= disconnected;
 precondition(
-    {AppState, connected, _} = From,
+    {AppState, _, _} = From,
     From,
     #data{triggers = {Accepted, _}},
     {call, _, station_call_triggered, [_, RPCCall]}
@@ -273,7 +271,7 @@ next_state_data(
 ) ->
     Data#data{station_cip = RPCCall, csms_cip = undefined};
 next_state_data(
-    From,
+    {_, connected, _} = From,
     From,
     #data{triggers = {Accepted, Rejected}} = Data,
     _Result,
@@ -768,22 +766,22 @@ csms_call_reply(pending, connected, _StationState, #data{csms_cip = undefined} =
             | csms_call_timeout(Data)
         ];
 csms_call_reply(pending, disconnected, _StationState, #data{csms_cip = undefined} = Data) ->
-    [
-        {history,
-            {call, station201_shim, csms_call, [
-                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
-            ]}}
-        | csms_call_timeout(Data)
-    ];
+    csms_reply(Data) ++ csms_call_timeout(Data) ++
+        [
+            {history,
+                {call, station201_shim, csms_call, [
+                    ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
+                ]}}
+        ];
 csms_call_reply(pending, _, _StationState, #data{csms_cip = {RPCCall, Ref}} = Data) ->
-    [
-        {history,
-            {call, station201_shim, csms_call, [
-                ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
-            ]}},
-        {history, {call, station201_shim, csms_rpccall_timeout, [?STATIONID, RPCCall, Ref]}}
-        | csms_call_timeout(Data)
-    ].
+    csms_reply(Data) ++ csms_call_timeout(Data) ++
+        [
+            {history,
+                {call, station201_shim, csms_call, [
+                    ?STATIONID, messageid(), ocpp_message_gen:request('2.0.1'), make_ref()
+                ]}},
+            {history, {call, station201_shim, csms_rpccall_timeout, [?STATIONID, RPCCall, Ref]}}
+        ].
 
 csms_reply(#data{station_cip = undefined} = Data) ->
     csms_badreply(Data);
@@ -979,15 +977,15 @@ station_call_reply(booting, connected, StationState, _Data) ->
         },
         {history, ?ARBITRARY_STATION_REPLY}
     ];
-station_call_reply(pending, disconnected, _StationState, _Data) ->
-    [
-        {history,
-            {call, station201_shim, station_call, [
-                ?STATIONID, rpccall(ocpp_message_gen:request('2.0.1'))
-            ]}},
-        %% TODO send triggered messages and reports
-        {history, ?ARBITRARY_STATION_REPLY}
-    ];
+station_call_reply(pending, disconnected, _StationState, Data) ->
+    station_reply(Data) ++
+        station_call_triggered(Data) ++
+        [
+            {history,
+                {call, station201_shim, station_call, [
+                    ?STATIONID, rpccall(ocpp_message_gen:request('2.0.1'))
+                ]}}
+        ];
 station_call_reply(
     pending, connected, _StationState, Data = #data{triggers = {Accepted, _Rejected}}
 ) ->
