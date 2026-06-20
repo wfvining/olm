@@ -548,11 +548,49 @@ provision_station_client_test_() ->
                         end
                     ),
                     ?_stationTest(
-                        "respond to BootNotificationRequest with status='Pending'",
+                        "previous boot notification is no longer pending",
                         begin
                             ocpp_station:reply(
                                 ?testStationID,
                                 <<"1">>,
+                                element(
+                                    2,
+                                    ocpp_message:new(
+                                        '2.0.1',
+                                        ~"BootNotificationResponse",
+                                        #{
+                                            status => 'Pending',
+                                            interval => 1,
+                                            currentTime => {{2025, 1, 1}, {0, 0, 0}}
+                                        }
+                                    )
+                                )
+                            ),
+                            ?assertError(timeout, ocpp_client_recv(50))
+                        end,
+                        _,
+                        begin
+                            ok
+                        end
+                    ),
+                    ?_stationTest(
+                        "restart provisioning by sending a BootNotificationRequest",
+                        ocpp_station:rpc(
+                            ?testStationID,
+                            <<
+                                ~S<[2,"3","BootNotification",>,
+                                ~S<{"chargingStation":{"model":"provision_test","vendorName":"eunit"},>,
+                                ~S<"reason":"PowerUp"}]>
+                            >>
+                        ),
+                        ok
+                    ),
+                    ?_stationTest(
+                        "respond to BootNotificationRequest with status='Pending'",
+                        begin
+                            ocpp_station:reply(
+                                ?testStationID,
+                                ~"3",
                                 element(
                                     2,
                                     ocpp_message:new(
@@ -577,7 +615,7 @@ provision_station_client_test_() ->
                             ),
                             ?assertMatch({ok, {callresult, _}}, DecodedRPC),
                             {ok, {callresult, RPCResponse}} = DecodedRPC,
-                            ?assertEqual(<<"1">>, ocpp_rpc:id(RPCResponse)),
+                            ?assertEqual(<<"3">>, ocpp_rpc:id(RPCResponse)),
                             {ok, ExpectedMessage} =
                                 ocpp_message:new(
                                     '2.0.1',
@@ -600,8 +638,7 @@ provisioning_test_() ->
         ?mockStationManager(
             ?withStationX([
                 rpc_before_connect(),
-                client_boot_retry(),
-                duplicate_boot_notification_request()
+                client_boot_retry()
             ])
         )}.
 
@@ -1521,41 +1558,6 @@ pending_disallowed(RPC) ->
             end}}
     end}.
 
-duplicate_boot_notification_request() ->
-    StationID = atom_to_binary(?FUNCTION_NAME),
-    {StationID, fun(_, _) -> duplicate_boot_notification_request(StationID) end}.
-
-duplicate_boot_notification_request(StationID) ->
-    {"a repeated BootNotificationRequest RPCCALL with the same message ID id rejected", fun() ->
-        {ok, _} = ocpp_station:connect(StationID, ['2.0.1']),
-        ok = ocpp_station:rpc(StationID, default_boot_notification_request(<<"1">>)),
-        ?assertEqual(
-            ok,
-            ocpp_station:rpc(StationID, default_boot_notification_request(<<"1">>))
-        ),
-        %% previous message is processed normally
-        {ok, BootNotificationResponse} =
-            ocpp_message:new(
-                '2.0.1',
-                ~"BootNotificationResponse",
-                #{
-                    status => 'Accepted',
-                    interval => 1,
-                    currentTime => {{2025, 1, 1}, {0, 0, 1}}
-                }
-            ),
-        ocpp_station:reply(
-            StationID,
-            <<"1">>,
-            BootNotificationResponse
-        ),
-        Msg = ocpp_client_recv(1000),
-        ?assertEqual(
-            {ok, {callresult, ocpp_rpc:callresult(BootNotificationResponse, <<"1">>)}},
-            ocpp_rpc:decode('2.0.1', Msg, [{expected, <<"BootNotification">>}])
-        )
-    end}.
-
 client_boot_retry() ->
     StationID = atom_to_binary(?FUNCTION_NAME),
     {StationID, fun(_, _) -> client_boot_retry(StationID) end}.
@@ -1570,7 +1572,7 @@ default_boot_notification_request(ID) ->
 
 client_boot_retry(StationID) ->
     {
-        "when the station retries a BootNotification the pending notification "
+        "when the station retries a BootNotification the previous notification "
         "is discarded and the new notification is pocessed",
         fun() ->
             {ok, _} = ocpp_station:connect(StationID, ['2.0.1']),
@@ -1593,25 +1595,11 @@ client_boot_retry(StationID) ->
                         currentTime => {{2025, 1, 1}, {0, 0, 0}}
                     }
                 ),
-
-            ocpp_station:reply(
+            {error, {call_not_pending, ~"1"}} = ocpp_station:reply(
                 StationID,
                 <<"1">>,
                 Resp
             ),
-            %% Make sure the station is still not provisioned
-            ?assertEqual(
-                ok,
-                ocpp_station:rpc(
-                    StationID,
-                    ~B<[2,"3","Heartbeat",{}]>
-                )
-            ),
-            HBResult = ocpp_client_recv(1000),
-            DecodedRPC = ocpp_rpc:decode('2.0.1', HBResult, [{expected, ~"Heartbeat"}]),
-            ?assertMatch({ok, {callerror, _}}, DecodedRPC),
-            {ok, {callerror, CallError}} = DecodedRPC,
-            ?assertEqual('SecurityError', ocpp_rpc:error_code(CallError)),
             {ok, BootNotificationResponse} =
                 ocpp_message:new(
                     '2.0.1',
@@ -1622,7 +1610,7 @@ client_boot_retry(StationID) ->
                         currentTime => {{2025, 1, 1}, {0, 0, 1}}
                     }
                 ),
-            ocpp_station:reply(
+            ok = ocpp_station:reply(
                 StationID,
                 <<"2">>,
                 BootNotificationResponse
